@@ -19,6 +19,11 @@ from flask_cors import CORS
 import yfinance as yf
 import pandas as pd
 import json, threading, time, re, webbrowser, socket, sqlite3
+try:
+    import psycopg2
+    import psycopg2.extras as _pge
+except ImportError:
+    psycopg2 = None          # 로컬 개발 환경(SQLite)에서는 없어도 됨
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -34,22 +39,91 @@ CORS(app)
 
 # ═══════════════════════════════════════════════════════════
 #  DB / Auth 설정
+#  - DATABASE_URL 환경변수가 있으면 PostgreSQL (Render 영구 DB)
+#  - 없으면 SQLite (로컬 개발용)
 # ═══════════════════════════════════════════════════════════
+DATABASE_URL   = os.environ.get("DATABASE_URL", "")
+_USE_PG        = bool(DATABASE_URL)
 DB_PATH        = os.path.join(DATA_DIR, "pt.db")
 JWT_SECRET     = os.environ.get("JWT_SECRET", "pt-jwt-secret-please-set-env")
 MASTER_USER    = os.environ.get("MASTER_USERNAME", "admin")
 MASTER_PASS    = os.environ.get("MASTER_PASSWORD", "Admin1234!")
 
-def _db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+class _DBConn:
+    """SQLite / PostgreSQL 통합 래퍼
+    - `with _db() as c:` 패턴 유지
+    - `c.execute(sql, params).fetchone()` 체인 유지
+    - ?  플레이스홀더를 PostgreSQL에선 %s 로 자동 변환
+    """
+    def __init__(self):
+        if _USE_PG:
+            self._conn = psycopg2.connect(DATABASE_URL)
+            self._pg   = True
+        else:
+            self._conn = sqlite3.connect(DB_PATH)
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA foreign_keys=ON")
+            self._pg = False
+
+    def _sql(self, s: str) -> str:
+        if not self._pg:
+            return s
+        s = s.replace('?', '%s')
+        s = re.sub(r"datetime\('now'\)", "NOW()", s, flags=re.IGNORECASE)
+        return s
+
+    def execute(self, sql: str, params=()):
+        sql = self._sql(sql)
+        if self._pg:
+            cur = self._conn.cursor(cursor_factory=_pge.RealDictCursor)
+            cur.execute(sql, params or None)
+            return cur
+        return self._conn.execute(sql, params)
+
+    def executescript(self, sql: str):
+        """여러 SQL 문을 한 번에 실행 (init 전용)"""
+        if self._pg:
+            for stmt in sql.split(';'):
+                s = stmt.strip()
+                if s:
+                    self.execute(s)
+        else:
+            self._conn.executescript(sql)
+
+    def commit(self):
+        self._conn.commit()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, *_):
+        (self._conn.rollback if exc_type else self._conn.commit)()
+        self._conn.close()
+        return False
+
+def _db() -> _DBConn:
+    return _DBConn()
 
 def _init_db():
-    with _db() as c:
-        c.executescript("""
+    if _USE_PG:
+        ddl = """
+            CREATE TABLE IF NOT EXISTS users (
+                id       SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                pw_hash  TEXT NOT NULL,
+                role     TEXT NOT NULL DEFAULT 'user',
+                created  TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS user_data (
+                user_id   INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                portfolio TEXT DEFAULT '[]',
+                assets    TEXT DEFAULT '[]',
+                updated   TIMESTAMP DEFAULT NOW()
+            );
+        """
+    else:
+        ddl = """
             CREATE TABLE IF NOT EXISTS users (
                 id       INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
@@ -64,11 +138,13 @@ def _init_db():
                 updated   TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
             );
-        """)
+        """
+    with _db() as c:
+        c.executescript(ddl)
         if not c.execute("SELECT 1 FROM users WHERE username=?", (MASTER_USER,)).fetchone():
             c.execute("INSERT INTO users(username,pw_hash,role) VALUES(?,?,?)",
                       (MASTER_USER, generate_password_hash(MASTER_PASS), "master"))
-            c.commit()
+        c.commit()
 
 _init_db()
 
@@ -111,8 +187,18 @@ def _ensure_user_data(c, user_id: int):
     if not c.execute("SELECT 1 FROM user_data WHERE user_id=?", (user_id,)).fetchone():
         c.execute("INSERT INTO user_data(user_id) VALUES(?)", (user_id,))
 
-VERSION = "2.0.2"
+VERSION = "2.0.3"
 CHANGELOG = [
+    {
+        "version": "2.0.3",
+        "date": "2026-06-29",
+        "changes": [
+            "DB 영구 저장 문제 해결: SQLite(ephemeral) → PostgreSQL(Render 무료 DB) 마이그레이션",
+            "DATABASE_URL 환경변수 감지 시 자동으로 PostgreSQL 사용, 없으면 SQLite(로컬 개발용)",
+            "재배포(git push) 후에도 계정·포트폴리오·자산 데이터 유지",
+            "SQLite/PostgreSQL 통합 래퍼 구현 (? → %s, datetime('now') → NOW() 자동 변환)",
+        ]
+    },
     {
         "version": "2.0.2",
         "date": "2026-06-29",
@@ -594,8 +680,12 @@ def api_register():
             _ensure_user_data(c, uid)
             c.commit()
         return jsonify({"message": "계정이 생성됐습니다."})
-    except sqlite3.IntegrityError:
-        return jsonify({"error": "이미 사용 중인 아이디입니다."}), 409
+    except Exception as e:
+        err = str(e).lower()
+        if "unique" in err or "duplicate" in err:
+            return jsonify({"error": "이미 사용 중인 아이디입니다."}), 409
+        app.logger.error(f"Register error: {e}")
+        return jsonify({"error": "서버 오류가 발생했습니다."}), 500
 
 # ── 로그인 ────────────────────────────────────────────────────────────────────
 @app.route("/api/auth/login", methods=["POST"])
