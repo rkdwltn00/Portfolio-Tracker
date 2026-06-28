@@ -108,8 +108,20 @@ def _ensure_user_data(c, user_id: int):
     if not c.execute("SELECT 1 FROM user_data WHERE user_id=?", (user_id,)).fetchone():
         c.execute("INSERT INTO user_data(user_id) VALUES(?)", (user_id,))
 
-VERSION = "1.3.0"
+VERSION = "2.0.0"
 CHANGELOG = [
+    {
+        "version": "2.0.0",
+        "date": "2026-06-28",
+        "changes": [
+            "로그인/회원가입 시스템 추가 (JWT 인증, SQLite 계정 DB)",
+            "master 계정: 전체 계정 생성·삭제·비밀번호 초기화",
+            "계정별 포트폴리오·자산 서버 저장 (재방문 시 복원)",
+            "내 자산 탭: 보유 종목 등록·수정, 현재가 자동 조회, 수익률 계산",
+            "내 투자성과 서브탭: 보유 종목 기준 수익률·평가금액 실시간 표시",
+            "뉴스 기간 필터 개선: raw 캐시 공유로 API 호출 3→1 감소",
+        ]
+    },
     {
         "version": "1.3.0",
         "date": "2026-06-28",
@@ -684,57 +696,82 @@ def api_price():
 def api_news():
     ticker = request.args.get("ticker", "")
     period = request.args.get("period", "1w")
+
+    # ── 1. 기간별 결과 캐시 (가장 빠른 경로) ──────────────────────────────────
     cache_key = f"news:{ticker}:{period}"
     cached = _cache.get(cache_key)
     if cached:
         return jsonify(cached)
 
+    # ── 2. Raw 뉴스 캐시 (ticker당 1회만 yfinance 호출) ──────────────────────
+    raw_key = f"news_raw:{ticker}"
+    scored = _cache.get(raw_key)
+
+    if scored is None:
+        try:
+            tk = yf.Ticker(ticker)
+            # 최대한 많은 뉴스 수집 (신버전 API 우선, 구버전 fallback)
+            try:
+                raw = tk.get_news(count=50) or []
+            except Exception:
+                raw = tk.news or []
+
+            scored = []
+            for item in raw:
+                p = _parse_news_item(item)
+                if not p or not p["title"]:
+                    continue
+                p["stars"], p["star_reasons"] = _score_fundamental_impact(
+                    p["title"], p["summary"], p["publisher"])
+                scored.append(p)
+
+            _cache.set(raw_key, scored, TTL_NEWS)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    # ── 3. 기간 필터 ──────────────────────────────────────────────────────────
     period_days = {"1w": 7, "1m": 30, "6m": 180}
-    cutoff = datetime.now() - timedelta(days=period_days.get(period, 7))
-    try:
-        raw = yf.Ticker(ticker).news or []
+    days = period_days.get(period, 7)
+    cutoff = datetime.now() - timedelta(days=days)
 
-        # parse + date filter
-        parsed = []
-        for item in raw:
-            p = _parse_news_item(item)
-            if p and p["pub_dt"] >= cutoff:
-                parsed.append(p)
+    # pub_dt == datetime.min 인 항목(날짜 파싱 실패)은 1w만 제외, 나머지 허용
+    if period == "1w":
+        filtered = [p for p in scored
+                    if p["pub_dt"] != datetime.min and p["pub_dt"] >= cutoff]
+    else:
+        filtered = [p for p in scored
+                    if p["pub_dt"] == datetime.min or p["pub_dt"] >= cutoff]
 
-        # 별점 계산 (CPU-only, 빠름)
-        for p in parsed:
-            p["stars"], p["star_reasons"] = _score_fundamental_impact(
-                p["title"], p["summary"], p["publisher"])
+    # 결과가 3개 미만이면 기간 제한 해제 (yfinance 뉴스는 최근 1~2주만 제공)
+    if len(filtered) < 3:
+        filtered = list(scored)
 
-        # 별점↓ · 티어↑ · 날짜↓ 정렬 후 상위 5개
-        parsed.sort(key=lambda x: (-x["stars"], x["tier"], -x["pub_dt"].timestamp()))
-        top = parsed[:5]
+    # ── 4. 중요도↓ · 티어↑ · 날짜↓ 정렬 → 상위 5개 ─────────────────────────
+    filtered.sort(key=lambda x: (-x["stars"], x["tier"],
+                                  -(x["pub_dt"].timestamp() if x["pub_dt"] != datetime.min else 0)))
+    top = filtered[:5]
 
-        # 제목·요약 병렬 번역
-        texts  = [p["title"]   for p in top] + [p["summary"] for p in top]
-        translated = _translate_batch(texts, 400)
-        titles_ko  = translated[:len(top)]
-        summaries_ko = translated[len(top):]
+    # ── 5. 제목·요약 병렬 번역 (이미 한글인 항목은 즉시 반환) ─────────────────
+    texts = [p["title"] for p in top] + [p["summary"] for p in top]
+    translated = _translate_batch(texts, 400)
+    titles_ko    = translated[:len(top)]
+    summaries_ko = translated[len(top):]
 
-        result = []
-        for i, p in enumerate(top):
-            result.append({
-                "title":          titles_ko[i],
-                "title_original": p["title"],
-                "publisher":      p["publisher"],
-                "tier":           p["tier"],
-                "link":           p["link"],
-                "date":           p["pub_dt"].strftime("%Y-%m-%d %H:%M") if p["pub_dt"] != datetime.min else "",
-                "thumbnail":      p["thumbnail"],
-                "summary":        summaries_ko[i],
-                "stars":          p["stars"],
-                "star_reasons":   p["star_reasons"],
-            })
+    result = [{
+        "title":          titles_ko[i],
+        "title_original": p["title"],
+        "publisher":      p["publisher"],
+        "tier":           p["tier"],
+        "link":           p["link"],
+        "date":           p["pub_dt"].strftime("%Y-%m-%d %H:%M") if p["pub_dt"] != datetime.min else "",
+        "thumbnail":      p["thumbnail"],
+        "summary":        summaries_ko[i],
+        "stars":          p["stars"],
+        "star_reasons":   p["star_reasons"],
+    } for i, p in enumerate(top)]
 
-        _cache.set(cache_key, result, TTL_NEWS)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    _cache.set(cache_key, result, TTL_NEWS)
+    return jsonify(result)
 
 @app.route("/api/stock/earnings")
 def api_earnings():
@@ -980,6 +1017,7 @@ def api_update():
             _cache.delete(f"price:{ticker}")
             _cache.delete(f"earnings:{ticker}")
             _cache.delete(f"fund:{ticker}")
+            _cache.delete(f"news_raw:{ticker}")
             for p in ("1w", "1m", "6m"):
                 _cache.delete(f"news:{ticker}:{p}")
             for p in ("1mo", "3mo", "1y", "5y"):
@@ -1010,15 +1048,27 @@ def api_update():
                     pass
             def _pre_news(t=t, tk=ticker):
                 try:
-                    raw = t.news or []
-                    cutoff = datetime.now() - timedelta(days=7)
-                    parsed = [p for item in raw
-                              if (p := _parse_news_item(item)) and p["pub_dt"] >= cutoff]
-                    for p in parsed:
+                    try:
+                        raw = t.get_news(count=50) or []
+                    except Exception:
+                        raw = t.news or []
+                    scored = []
+                    for item in raw:
+                        p = _parse_news_item(item)
+                        if not p or not p["title"]:
+                            continue
                         p["stars"], p["star_reasons"] = _score_fundamental_impact(
                             p["title"], p["summary"], p["publisher"])
-                    parsed.sort(key=lambda x: (-x["stars"], x["tier"], -x["pub_dt"].timestamp()))
-                    top = parsed[:5]
+                        scored.append(p)
+                    _cache.set(f"news_raw:{tk}", scored, TTL_NEWS)
+
+                    # 1w 결과도 즉시 캐시 (가장 자주 쓰이는 기간)
+                    cutoff = datetime.now() - timedelta(days=7)
+                    filtered = [p for p in scored
+                                if p["pub_dt"] != datetime.min and p["pub_dt"] >= cutoff] or list(scored)
+                    filtered.sort(key=lambda x: (-x["stars"], x["tier"],
+                                                  -(x["pub_dt"].timestamp() if x["pub_dt"] != datetime.min else 0)))
+                    top = filtered[:5]
                     texts = [p["title"] for p in top] + [p["summary"] for p in top]
                     translated = _translate_batch(texts, 400)
                     titles_ko = translated[:len(top)]
@@ -1027,7 +1077,7 @@ def api_update():
                         "title": titles_ko[i], "title_original": p["title"],
                         "publisher": p["publisher"], "tier": p["tier"],
                         "link": p["link"],
-                        "date": p["pub_dt"].strftime("%Y-%m-%d %H:%M"),
+                        "date": p["pub_dt"].strftime("%Y-%m-%d %H:%M") if p["pub_dt"] != datetime.min else "",
                         "thumbnail": p["thumbnail"], "summary": sums_ko[i],
                         "stars": p["stars"], "star_reasons": p["star_reasons"],
                     } for i, p in enumerate(top)]
