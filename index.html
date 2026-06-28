@@ -536,7 +536,7 @@ body { padding-bottom: env(safe-area-inset-bottom); }
     <span class="user-name" id="userNameDisplay"></span>
   </div>
   <button class="btn btn-ghost btn-sm" id="btnLogout">로그아웃</button>
-  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.0.4</button>
+  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.0.5</button>
   <button class="btn btn-icon btn-ghost" id="btnTheme" title="테마 전환">🌙</button>
 </header>
 
@@ -727,8 +727,9 @@ body { padding-bottom: env(safe-area-inset-bottom); }
     <!-- Empty State -->
     <div class="empty-state" id="emptyState">
       <div class="empty-state-icon">📋</div>
-      <h3>포트폴리오 종목을 추가하세요</h3>
-      <p>위 검색창에서 미국/국내 종목의 티커 또는 이름을 입력하면<br/>포트폴리오에 등록할 수 있습니다.</p>
+      <h3>포트폴리오 종목이 없습니다</h3>
+      <p>📊 <strong>내 자산</strong> 탭에서 보유 종목을 등록하면 자동으로 여기에 나타납니다.<br/>
+         또는 위 검색창에서 티커·종목명을 직접 검색해 추가할 수 있습니다.</p>
     </div>
   </div><!-- /top-tab-portfolio -->
 
@@ -884,32 +885,35 @@ async function afterLogin() {
     }
   } catch {}
 
-  // ── 포트폴리오 결정: 서버 → localStorage → 기본값
-  if (serverPortfolio && serverPortfolio.length > 0) {
-    portfolio = serverPortfolio;
-    // 서버 데이터가 있으면 localStorage도 최신으로 갱신
-    localStorage.setItem(`portfolio_v1_${authUser}`, JSON.stringify(portfolio));
-  } else if (lsPortfolio && lsPortfolio.length > 0) {
-    portfolio = lsPortfolio;
-    _serverSavePortfolio();   // 서버가 비어있었으면 즉시 재동기화
-  } else {
-    portfolio = DEFAULT_PORTFOLIO;
-    savePortfolio();
-  }
-
-  // ── 자산 결정: 서버 → localStorage → 빈 배열
+  // ── ① 자산 먼저 결정 (portfolio 초기화에 필요)
   if (serverAssets && serverAssets.length > 0) {
     assets = serverAssets;
     localStorage.setItem(_assetsLsKey(), JSON.stringify(assets));
   } else if (lsAssets && lsAssets.length > 0) {
     assets = lsAssets;
-    _serverSaveAssets();      // 서버가 비어있었으면 즉시 재동기화
+    _serverSaveAssets();
   } else {
     assets = [];
   }
 
+  // ── ② 포트폴리오 결정: 서버 → localStorage → 내 자산 기반 초기화 → 빈 상태
+  if (serverPortfolio && serverPortfolio.length > 0) {
+    portfolio = serverPortfolio;
+    localStorage.setItem(`portfolio_v1_${authUser}`, JSON.stringify(portfolio));
+  } else if (lsPortfolio && lsPortfolio.length > 0) {
+    portfolio = lsPortfolio;
+    _serverSavePortfolio();
+  } else if (assets.length > 0) {
+    // 저장된 portfolio가 없으면 내 자산 기반으로 초기화
+    portfolio = assets.map(a => ({ ticker: a.ticker, name: a.name }));
+    savePortfolio();
+  } else {
+    portfolio = [];
+  }
+
   renderChips();
   renderAssets();
+  // 자산에 있지만 portfolio에 없는 종목 병합 (수동 추가 분 유지)
   syncAssetsToPortfolio();
   if (portfolio.length) selectTicker(portfolio[0].ticker);
   loadVersion();

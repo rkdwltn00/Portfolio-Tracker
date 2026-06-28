@@ -187,8 +187,19 @@ def _ensure_user_data(c, user_id: int):
     if not c.execute("SELECT 1 FROM user_data WHERE user_id=?", (user_id,)).fetchone():
         c.execute("INSERT INTO user_data(user_id) VALUES(?)", (user_id,))
 
-VERSION = "2.0.4"
+VERSION = "2.0.5"
 CHANGELOG = [
+    {
+        "version": "2.0.5",
+        "date": "2026-06-29",
+        "changes": [
+            "포트폴리오 종목 탭 자동 초기화: 내 자산 등록 종목 기준으로 자동 반영",
+            "afterLogin 로드 순서 수정: 자산 먼저 결정 후 포트폴리오 초기화 (assets → portfolio 순)",
+            "저장된 포트폴리오 없을 때 DEFAULT_PORTFOLIO 대신 내 자산 기반으로 초기화",
+            "수동 추가 종목 유지: syncAssetsToPortfolio로 자산+수동추가 병합",
+            "빈 상태 메시지 개선: 내 자산 탭에서 등록하면 자동 반영됨을 안내",
+        ]
+    },
     {
         "version": "2.0.4",
         "date": "2026-06-29",
