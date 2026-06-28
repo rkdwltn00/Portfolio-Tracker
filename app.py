@@ -717,12 +717,38 @@ def api_fundamentals():
         desc_ko, sector_ko, ind_ko = _translate_batch(
             [raw_desc, raw_sector, raw_ind], 600)
 
+        def safe_pe(key):
+            """P/E는 음수·극단값(-500 이상 or 500 이하) 필터링"""
+            v = info.get(key)
+            if v is None:
+                return None
+            v = float(v)
+            if abs(v) > 500:   # 비정상 수치 (EPS가 0에 가까울 때 발생)
+                return None
+            return round(v, 2)
+
+        # 배당수익률: yfinance dividendYield는 이미 % 단위 (0.09 = 0.09%)
+        # trailingAnnualDividendYield는 비율 단위 (0.000853 = 0.085%)
+        # 더 정확한 trailing 값을 우선 사용, 없으면 dividendYield 그대로 사용
+        trailing_dy = info.get("trailingAnnualDividendYield")
+        fwd_dy      = info.get("dividendYield")
+        if trailing_dy and trailing_dy > 0:
+            div_yield = round(trailing_dy * 100, 4)   # 비율 → %
+        elif fwd_dy and fwd_dy > 0:
+            div_yield = round(float(fwd_dy), 4)        # 이미 % 단위
+        else:
+            div_yield = None
+
+        # 연간 배당금(달러)
+        div_rate = info.get("trailingAnnualDividendRate") or info.get("dividendRate")
+
         result = {
             "marketCap":     (_fmt_revenue(mkt).replace("$", "") + " USD") if mkt else None,
-            "pe":            safe("trailingPE"),
-            "forwardPE":     safe("forwardPE"),
+            "pe":            safe_pe("trailingPE"),
+            "forwardPE":     safe_pe("forwardPE"),
             "eps":           safe("trailingEps"),
-            "dividendYield": round(info.get("dividendYield", 0) * 100, 2) if info.get("dividendYield") else None,
+            "dividendYield": div_yield,
+            "dividendRate":  round(float(div_rate), 2) if div_rate else None,
             "beta":          safe("beta"),
             "high52w":       safe("fiftyTwoWeekHigh"),
             "low52w":        safe("fiftyTwoWeekLow"),
