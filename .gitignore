@@ -1,0 +1,23 @@
+# 번역 캐시 (서버에서 자동 생성)
+.trans_cache.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# 환경
+.env
+venv/
+.venv/
+
+# 에디터
+.vscode/
+.idea/
+*.swp
+.DS_Store
