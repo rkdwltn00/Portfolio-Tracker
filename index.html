@@ -197,6 +197,7 @@ a { color: var(--accent); text-decoration: none; }
 .summary-item { flex: 1; min-width: 120px; }
 .summary-label { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: .4px; margin-bottom: 4px; }
 .summary-value { font-size: 18px; font-weight: 700; }
+.summary-krw   { font-size: 12px; color: var(--text3); margin-top: 3px; font-weight: 500; }
 
 /* ── 내 투자성과 ── */
 .perf-card {
@@ -535,7 +536,7 @@ body { padding-bottom: env(safe-area-inset-bottom); }
     <span class="user-name" id="userNameDisplay"></span>
   </div>
   <button class="btn btn-ghost btn-sm" id="btnLogout">로그아웃</button>
-  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.0.1</button>
+  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.0.2</button>
   <button class="btn btn-icon btn-ghost" id="btnTheme" title="테마 전환">🌙</button>
 </header>
 
@@ -586,18 +587,22 @@ body { padding-bottom: env(safe-area-inset-bottom); }
       <div class="summary-item">
         <div class="summary-label">총 투자금액</div>
         <div class="summary-value" id="summaryInvested">--</div>
+        <div class="summary-krw" id="summaryInvestedKrw"></div>
       </div>
       <div class="summary-item">
         <div class="summary-label">총 평가금액</div>
         <div class="summary-value" id="summaryMarket">--</div>
+        <div class="summary-krw" id="summaryMarketKrw"></div>
       </div>
       <div class="summary-item">
         <div class="summary-label">총 수익금</div>
         <div class="summary-value" id="summaryPnl">--</div>
+        <div class="summary-krw" id="summaryPnlKrw"></div>
       </div>
       <div class="summary-item">
         <div class="summary-label">총 수익률</div>
         <div class="summary-value" id="summaryPct">--</div>
+        <div class="summary-krw" id="summaryRateNote"></div>
       </div>
     </div>
 
@@ -745,6 +750,8 @@ const DEFAULT_PORTFOLIO = [
 let authToken   = localStorage.getItem('pt_token') || '';
 let authUser    = '';
 let authRole    = '';
+let usdKrwRate  = null;   // 환율 (1 USD = ? KRW)
+let usdKrwDate  = '';     // 기준일자
 let portfolio   = [];
 let assets      = [];   // [{ticker,name,shares,avgCost}]
 let activeTicker = null;
@@ -963,7 +970,7 @@ document.querySelectorAll('.top-tab-btn').forEach(btn => {
     document.querySelectorAll('.top-tab-panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById(`top-tab-${btn.dataset.top}`).classList.add('active');
-    if (btn.dataset.top === 'assets') refreshAssetPrices();
+    if (btn.dataset.top === 'assets') { loadExchangeRate(); refreshAssetPrices(); }
   });
 });
 
@@ -1007,6 +1014,7 @@ async function addAsset() {
   document.getElementById('assetShares').value = '';
   document.getElementById('assetCost').value = '';
   renderAssets();
+  loadExchangeRate();
   refreshAssetPrices();
 }
 
@@ -1086,10 +1094,28 @@ function renderAssets() {
   const totalPnl = totalMarket - totalInvested;
   const totalPct = totalInvested > 0 ? totalPnl / totalInvested * 100 : 0;
   const pnlCls   = totalPnl >= 0 ? 'pos' : 'neg';
+
+  // USD 값
   document.getElementById('summaryInvested').textContent = `$${fmtNum2(totalInvested)}`;
-  document.getElementById('summaryMarket').textContent = `$${fmtNum2(totalMarket)}`;
-  document.getElementById('summaryPnl').innerHTML = `<span class="${pnlCls}">${totalPnl >= 0 ? '+' : ''}$${fmtNum2(totalPnl)}</span>`;
-  document.getElementById('summaryPct').innerHTML = `<span class="${pnlCls}">${totalPct >= 0 ? '+' : ''}${totalPct.toFixed(2)}%</span>`;
+  document.getElementById('summaryMarket').textContent   = `$${fmtNum2(totalMarket)}`;
+  document.getElementById('summaryPnl').innerHTML        = `<span class="${pnlCls}">${totalPnl >= 0 ? '+' : ''}$${fmtNum2(totalPnl)}</span>`;
+  document.getElementById('summaryPct').innerHTML        = `<span class="${pnlCls}">${totalPct >= 0 ? '+' : ''}${totalPct.toFixed(2)}%</span>`;
+
+  // 원화 환산 (환율 로드된 경우)
+  if (usdKrwRate) {
+    const krw = v => `₩${Math.round(v * usdKrwRate).toLocaleString('ko-KR')}`;
+    const pnlSign = totalPnl >= 0 ? '+' : '';
+    document.getElementById('summaryInvestedKrw').textContent = `≈ ${krw(totalInvested)}`;
+    document.getElementById('summaryMarketKrw').textContent   = `≈ ${krw(totalMarket)}`;
+    document.getElementById('summaryPnlKrw').innerHTML        = `<span class="${pnlCls}">≈ ${pnlSign}${krw(totalPnl)}</span>`;
+    document.getElementById('summaryRateNote').textContent    = `₩${usdKrwRate.toLocaleString('ko-KR', {maximumFractionDigits:1})}/USD (${usdKrwDate})`;
+  } else {
+    // 환율 미로드 시 로딩 표시 후 fetch
+    ['summaryInvestedKrw','summaryMarketKrw','summaryPnlKrw'].forEach(id => {
+      document.getElementById(id).textContent = '환율 조회 중...';
+    });
+    loadExchangeRate();
+  }
 }
 
 function startEdit(ticker, field) {
@@ -1110,6 +1136,22 @@ function startEdit(ticker, field) {
   };
   input.addEventListener('blur', commit);
   input.addEventListener('keydown', e => { if (e.key === 'Enter') { input.blur(); } else if (e.key === 'Escape') { renderAssets(); } });
+}
+
+/* ════════════════════════════════════════
+   환율 (USD/KRW)
+════════════════════════════════════════ */
+async function loadExchangeRate() {
+  if (usdKrwRate) return;   // 이미 로드됨
+  try {
+    const r = await fetch('/api/exchange-rate');
+    const d = await r.json();
+    if (d.rate) {
+      usdKrwRate = d.rate;
+      usdKrwDate = d.date || '';
+      renderAssets();   // 원화 값 갱신
+    }
+  } catch {}
 }
 
 async function refreshAssetPrices() {

@@ -111,8 +111,18 @@ def _ensure_user_data(c, user_id: int):
     if not c.execute("SELECT 1 FROM user_data WHERE user_id=?", (user_id,)).fetchone():
         c.execute("INSERT INTO user_data(user_id) VALUES(?)", (user_id,))
 
-VERSION = "2.0.1"
+VERSION = "2.0.2"
 CHANGELOG = [
+    {
+        "version": "2.0.2",
+        "date": "2026-06-29",
+        "changes": [
+            "내 자산 탭: 오늘 기준 환율(USD/KRW) 자동 조회",
+            "총 투자금액·평가금액·수익금을 달러와 원화(₩) 동시 표시",
+            "환율 출처: Frankfurter (ECB 기준) → yfinance USDKRW=X 순 fallback",
+            "환율 캐시 1시간, 기준일자 함께 표시",
+        ]
+    },
     {
         "version": "2.0.1",
         "date": "2026-06-29",
@@ -680,6 +690,44 @@ def api_save_assets():
                   (g.uid, json.dumps(assets, ensure_ascii=False)))
         c.commit()
     return jsonify({"ok": True})
+
+# ── USD/KRW 환율 ──────────────────────────────────────────────────────────────
+@app.route("/api/exchange-rate")
+def api_exchange_rate():
+    cache_key = "exchange_rate:USDKRW"
+    cached = _cache.get(cache_key)
+    if cached:
+        return jsonify(cached)
+
+    # 1차: Frankfurter (ECB 기준, 무료·키 불필요)
+    try:
+        import requests as _req
+        r = _req.get("https://api.frankfurter.app/latest?from=USD&to=KRW",
+                     timeout=6)
+        d = r.json()
+        result = {
+            "rate": round(float(d["rates"]["KRW"]), 2),
+            "date": d.get("date", datetime.now().strftime("%Y-%m-%d")),
+            "source": "Frankfurter (ECB)",
+        }
+        _cache.set(cache_key, result, 3600)   # 1시간 캐시
+        return jsonify(result)
+    except Exception:
+        pass
+
+    # 2차 fallback: yfinance USDKRW=X
+    try:
+        fi = yf.Ticker("USDKRW=X").fast_info
+        rate = float(fi.last_price)
+        result = {
+            "rate": round(rate, 2),
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "source": "Yahoo Finance",
+        }
+        _cache.set(cache_key, result, 3600)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/debug/<ticker>")
 def api_debug(ticker):
