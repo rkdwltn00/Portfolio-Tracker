@@ -19,8 +19,11 @@ from flask_cors import CORS
 import yfinance as yf
 import pandas as pd
 import json, threading, time, re, webbrowser, socket, sqlite3
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import quote as _url_quote
+from email.utils import parsedate_to_datetime as _parse_rfc2822
 from deep_translator import GoogleTranslator
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
@@ -108,8 +111,19 @@ def _ensure_user_data(c, user_id: int):
     if not c.execute("SELECT 1 FROM user_data WHERE user_id=?", (user_id,)).fetchone():
         c.execute("INSERT INTO user_data(user_id) VALUES(?)", (user_id,))
 
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 CHANGELOG = [
+    {
+        "version": "2.0.1",
+        "date": "2026-06-29",
+        "changes": [
+            "뉴스 소스 대폭 확대: 1달·6개월 탭에 Google News RSS + Yahoo Finance RSS 추가",
+            "yfinance(최근 1~2주) + Google News + Yahoo Finance RSS 3개 소스 병렬 수집 후 통합",
+            "중복 뉴스 자동 제거 (제목 유사도 60% 이상이면 중복 처리)",
+            "1주일 탭은 기존 yfinance 단독 유지 (속도 우선)",
+            "로그인 오버레이 표시 버그 수정 (서비스워커 캐시 버전 갱신)",
+        ]
+    },
     {
         "version": "2.0.0",
         "date": "2026-06-28",
@@ -119,7 +133,6 @@ CHANGELOG = [
             "계정별 포트폴리오·자산 서버 저장 (재방문 시 복원)",
             "내 자산 탭: 보유 종목 등록·수정, 현재가 자동 조회, 수익률 계산",
             "내 투자성과 서브탭: 보유 종목 기준 수익률·평가금액 실시간 표시",
-            "뉴스 기간 필터 개선: raw 캐시 공유로 API 호출 3→1 감소",
         ]
     },
     {
@@ -444,6 +457,72 @@ def _parse_news_item(item: dict) -> dict | None:
         "tier": _source_tier(publisher),
     }
 
+def _rss_pub_dt(date_str: str) -> datetime:
+    """RFC 2822 날짜 문자열 → datetime (실패 시 datetime.min)."""
+    try:
+        return _parse_rfc2822(date_str).replace(tzinfo=None)
+    except Exception:
+        return datetime.min
+
+
+def _fetch_rss(url: str, days: int, default_pub: str = "") -> list[dict]:
+    """RSS 피드를 가져와 기간 내 뉴스 아이템 반환. 실패 시 []."""
+    cutoff = datetime.now() - timedelta(days=days)
+    try:
+        import requests as _req
+        r = _req.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; PTBot/2.0)"},
+                     timeout=8)
+        r.raise_for_status()
+        root = ET.fromstring(r.content)
+        out = []
+        for item in root.findall(".//item"):
+            title   = (item.findtext("title") or "").strip()
+            link    = (item.findtext("link")  or "").strip()
+            pub_str = item.findtext("pubDate") or ""
+            desc    = item.findtext("description") or ""
+            source  = (item.findtext("source") or default_pub).strip()
+
+            # HTML 태그 제거
+            desc = _PAT["html_tag"].sub("", desc)[:300].strip()
+
+            pub_dt = _rss_pub_dt(pub_str)
+            if pub_dt == datetime.min or pub_dt < cutoff:
+                continue
+
+            # Google News 형식: "기사 제목 - 언론사"
+            if not source and " - " in title:
+                t, s = title.rsplit(" - ", 1)
+                title, source = t.strip(), s.strip()
+
+            if not title:
+                continue
+
+            out.append({
+                "title":     title,
+                "publisher": source or default_pub,
+                "link":      link,
+                "pub_dt":    pub_dt,
+                "thumbnail": "",
+                "summary":   desc,
+                "tier":      _source_tier(source or default_pub),
+            })
+        return out
+    except Exception:
+        return []
+
+
+def _dedup_news(items: list[dict]) -> list[dict]:
+    """제목 단어 자카드 유사도 > 60% 이면 중복으로 처리."""
+    seen: list[set] = []
+    out  = []
+    for it in items:
+        words = set(re.sub(r"[^\w\s]", "", it["title"].lower()).split())
+        if not any(len(words & s) / max(len(words | s), 1) > 0.6 for s in seen):
+            seen.append(words)
+            out.append(it)
+    return out
+
+
 def resolve_ticker(query: str):
     candidates = [query.upper(), query.upper() + ".KS", query.upper() + ".KQ"]
     for sym in candidates:
@@ -694,66 +773,100 @@ def api_price():
 
 @app.route("/api/stock/news")
 def api_news():
-    ticker = request.args.get("ticker", "")
+    ticker = (request.args.get("ticker", "") or "").upper()
     period = request.args.get("period", "1w")
 
-    # ── 1. 기간별 결과 캐시 (가장 빠른 경로) ──────────────────────────────────
+    # ── 0. 기간별 결과 캐시 (가장 빠른 경로) ─────────────────────────────────
     cache_key = f"news:{ticker}:{period}"
     cached = _cache.get(cache_key)
     if cached:
         return jsonify(cached)
 
-    # ── 2. Raw 뉴스 캐시 (ticker당 1회만 yfinance 호출) ──────────────────────
-    raw_key = f"news_raw:{ticker}"
-    scored = _cache.get(raw_key)
-
-    if scored is None:
-        try:
-            tk = yf.Ticker(ticker)
-            # 최대한 많은 뉴스 수집 (신버전 API 우선, 구버전 fallback)
-            try:
-                raw = tk.get_news(count=50) or []
-            except Exception:
-                raw = tk.news or []
-
-            scored = []
-            for item in raw:
-                p = _parse_news_item(item)
-                if not p or not p["title"]:
-                    continue
-                p["stars"], p["star_reasons"] = _score_fundamental_impact(
-                    p["title"], p["summary"], p["publisher"])
-                scored.append(p)
-
-            _cache.set(raw_key, scored, TTL_NEWS)
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-
-    # ── 3. 기간 필터 ──────────────────────────────────────────────────────────
     period_days = {"1w": 7, "1m": 30, "6m": 180}
     days = period_days.get(period, 7)
-    cutoff = datetime.now() - timedelta(days=days)
 
-    # pub_dt == datetime.min 인 항목(날짜 파싱 실패)은 1w만 제외, 나머지 허용
+    # ═════════════════════════════════════════════════════════════════════════
+    #  [1주일] yfinance raw 캐시만 사용 (빠름)
+    # ═════════════════════════════════════════════════════════════════════════
     if period == "1w":
+        raw_key = f"news_raw:{ticker}"
+        scored  = _cache.get(raw_key)
+        if scored is None:
+            try:
+                tk = yf.Ticker(ticker)
+                try:
+                    raw = tk.get_news(count=50) or []
+                except Exception:
+                    raw = tk.news or []
+                scored = []
+                for item in raw:
+                    p = _parse_news_item(item)
+                    if not p or not p["title"]:
+                        continue
+                    p["stars"], p["star_reasons"] = _score_fundamental_impact(
+                        p["title"], p["summary"], p["publisher"])
+                    scored.append(p)
+                _cache.set(raw_key, scored, TTL_NEWS)
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+
+        cutoff   = datetime.now() - timedelta(days=7)
         filtered = [p for p in scored
                     if p["pub_dt"] != datetime.min and p["pub_dt"] >= cutoff]
+        if len(filtered) < 3:
+            filtered = list(scored)   # yfinance 뉴스가 7일 미만이면 전체 반환
+
+    # ═════════════════════════════════════════════════════════════════════════
+    #  [1달·6개월] yfinance + Google News RSS + Yahoo Finance RSS 병렬 수집
+    # ═════════════════════════════════════════════════════════════════════════
     else:
-        filtered = [p for p in scored
-                    if p["pub_dt"] == datetime.min or p["pub_dt"] >= cutoff]
+        # 회사명 (가격 캐시에 있으면 활용해 검색 품질 향상)
+        price_c  = _cache.get(f"price:{ticker}")
+        company  = (price_c or {}).get("name", ticker)
 
-    # 결과가 3개 미만이면 기간 제한 해제 (yfinance 뉴스는 최근 1~2주만 제공)
-    if len(filtered) < 3:
-        filtered = list(scored)
+        # Google News: ticker + 회사명 복합 쿼리
+        q_enc    = _url_quote(f"{ticker} {company} stock")
+        goog_url = (f"https://news.google.com/rss/search"
+                    f"?q={q_enc}&hl=en-US&gl=US&ceid=US:en")
+        yhoo_url = (f"https://feeds.finance.yahoo.com/rss/2.0/headline"
+                    f"?s={ticker}&region=US&lang=en-US")
 
-    # ── 4. 중요도↓ · 티어↑ · 날짜↓ 정렬 → 상위 5개 ─────────────────────────
-    filtered.sort(key=lambda x: (-x["stars"], x["tier"],
-                                  -(x["pub_dt"].timestamp() if x["pub_dt"] != datetime.min else 0)))
+        # yfinance raw (이미 캐시됐으면 재사용)
+        yf_scored = _cache.get(f"news_raw:{ticker}") or []
+
+        # Google News / Yahoo Finance RSS 병렬 fetch
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            fut_g = ex.submit(_fetch_rss, goog_url, days)
+            fut_y = ex.submit(_fetch_rss, yhoo_url, days, "Yahoo Finance")
+        google_items = fut_g.result()
+        yahoo_items  = fut_y.result()
+
+        # RSS 아이템 별점 계산
+        for p in google_items + yahoo_items:
+            p["stars"], p["star_reasons"] = _score_fundamental_impact(
+                p["title"], p["summary"], p["publisher"])
+
+        # yfinance 기간 필터 (날짜 실패 항목은 통과)
+        cutoff    = datetime.now() - timedelta(days=days)
+        yf_part   = [p for p in yf_scored
+                     if p["pub_dt"] == datetime.min or p["pub_dt"] >= cutoff]
+
+        # 합치기 → 중복 제거
+        all_items = yf_part + google_items + yahoo_items
+        filtered  = _dedup_news(all_items)
+        if not filtered:
+            filtered = yf_scored[:5]   # 모든 소스 실패 시 yfinance 원본 사용
+
+    # ── 중요도↓ · 티어↑ · 날짜↓ 정렬 → 상위 5개 ────────────────────────────
+    filtered.sort(key=lambda x: (
+        -x["stars"], x["tier"],
+        -(x["pub_dt"].timestamp() if x["pub_dt"] != datetime.min else 0)
+    ))
     top = filtered[:5]
 
-    # ── 5. 제목·요약 병렬 번역 (이미 한글인 항목은 즉시 반환) ─────────────────
-    texts = [p["title"] for p in top] + [p["summary"] for p in top]
-    translated = _translate_batch(texts, 400)
+    # ── 제목·요약 병렬 번역 ───────────────────────────────────────────────────
+    texts        = [p["title"] for p in top] + [p["summary"] for p in top]
+    translated   = _translate_batch(texts, 400)
     titles_ko    = translated[:len(top)]
     summaries_ko = translated[len(top):]
 
@@ -763,14 +876,17 @@ def api_news():
         "publisher":      p["publisher"],
         "tier":           p["tier"],
         "link":           p["link"],
-        "date":           p["pub_dt"].strftime("%Y-%m-%d %H:%M") if p["pub_dt"] != datetime.min else "",
+        "date":           (p["pub_dt"].strftime("%Y-%m-%d %H:%M")
+                          if p["pub_dt"] != datetime.min else ""),
         "thumbnail":      p["thumbnail"],
         "summary":        summaries_ko[i],
         "stars":          p["stars"],
         "star_reasons":   p["star_reasons"],
     } for i, p in enumerate(top)]
 
-    _cache.set(cache_key, result, TTL_NEWS)
+    # 1m·6m 는 캐시 TTL 단축 (외부 API 결과는 시간이 지나면 바뀜)
+    ttl = TTL_NEWS if period == "1w" else TTL_NEWS // 2
+    _cache.set(cache_key, result, ttl)
     return jsonify(result)
 
 @app.route("/api/stock/earnings")
