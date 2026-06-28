@@ -860,18 +860,30 @@ async function afterLogin() {
     if (d.portfolio && d.portfolio.length > 0) {
       portfolio = d.portfolio;
     } else {
-      const ls = localStorage.getItem('portfolio_v1');
+      const ls = localStorage.getItem(`portfolio_v1_${d.username || authUser}`)
+             || localStorage.getItem('portfolio_v1');
       portfolio = ls ? JSON.parse(ls) : DEFAULT_PORTFOLIO;
-      savePortfolio(); // 서버에 동기화
+      savePortfolio();
     }
-    assets = d.assets || [];
+    // 자산: 서버 데이터 우선, 비어있으면 localStorage 백업 복원
+    if (d.assets && d.assets.length > 0) {
+      assets = d.assets;
+    } else {
+      const lsKey = `assets_v1_${authUser}`;
+      const lsAssets = localStorage.getItem(lsKey);
+      assets = lsAssets ? JSON.parse(lsAssets) : [];
+      if (assets.length) saveAssets(); // 서버에 재동기화
+    }
   } catch {
-    const ls = localStorage.getItem('portfolio_v1');
+    const ls = localStorage.getItem(`portfolio_v1_${authUser}`)
+            || localStorage.getItem('portfolio_v1');
     portfolio = ls ? JSON.parse(ls) : DEFAULT_PORTFOLIO;
-    assets = [];
+    const lsAssets = localStorage.getItem(`assets_v1_${authUser}`);
+    assets = lsAssets ? JSON.parse(lsAssets) : [];
   }
   renderChips();
   renderAssets();
+  syncAssetsToPortfolio();   // 자산에 있는 종목 포트폴리오에 자동 반영
   if (portfolio.length) selectTicker(portfolio[0].ticker);
   loadVersion();
   if (authRole === 'master') document.getElementById('btnAdmin').style.display = '';
@@ -971,19 +983,51 @@ document.querySelectorAll('.top-tab-btn').forEach(btn => {
     btn.classList.add('active');
     document.getElementById(`top-tab-${btn.dataset.top}`).classList.add('active');
     if (btn.dataset.top === 'assets') { loadExchangeRate(); refreshAssetPrices(); }
+    if (btn.dataset.top === 'portfolio') { syncAssetsToPortfolio(); }
   });
+});
+
+// 탭/브라우저 닫기 전 디바운스 대기 없이 즉시 저장
+window.addEventListener('beforeunload', () => {
+  _flushAssets();
+  _flushPortfolio();
 });
 
 /* ════════════════════════════════════════
    내 자산 — Holdings
 ════════════════════════════════════════ */
 let _saveAssetsTimer = null;
+function _assetsLsKey() { return `assets_v1_${authUser}`; }
+
 function saveAssets() {
+  // localStorage 즉시 백업 (브라우저 닫혀도 안전)
+  if (authUser) localStorage.setItem(_assetsLsKey(), JSON.stringify(assets));
   clearTimeout(_saveAssetsTimer);
-  _saveAssetsTimer = setTimeout(() => {
-    if (!authToken) return;
-    apiFetch('/api/me/assets', { method:'PUT', body: JSON.stringify({ assets }) }).catch(()=>{});
-  }, 600);
+  _saveAssetsTimer = setTimeout(() => _flushAssets(), 600);
+}
+
+function _flushAssets() {
+  clearTimeout(_saveAssetsTimer);
+  if (!authToken) return;
+  if (authUser) localStorage.setItem(_assetsLsKey(), JSON.stringify(assets));
+  apiFetch('/api/me/assets', { method:'PUT', body: JSON.stringify({ assets }) }).catch(()=>{});
+}
+
+/* 내 자산에 등록된 종목을 포트폴리오 칩에 자동 동기화 */
+function syncAssetsToPortfolio() {
+  let changed = false;
+  for (const a of assets) {
+    if (!portfolio.some(p => p.ticker === a.ticker)) {
+      portfolio.push({ ticker: a.ticker, name: a.name });
+      changed = true;
+    }
+  }
+  if (changed) {
+    savePortfolio();
+    renderChips();
+    // 활성 종목이 없으면 첫 번째 자동 선택
+    if (!activeTicker && portfolio.length) selectTicker(portfolio[0].ticker);
+  }
 }
 
 document.getElementById('btnAddAsset').addEventListener('click', addAsset);
@@ -1010,6 +1054,7 @@ async function addAsset() {
 
   assets.push({ ticker, name, shares, avgCost });
   saveAssets();
+  syncAssetsToPortfolio();   // 포트폴리오 칩에도 즉시 반영
   document.getElementById('assetTicker').value = '';
   document.getElementById('assetShares').value = '';
   document.getElementById('assetCost').value = '';
@@ -1225,12 +1270,16 @@ function renderPerformance(ticker) {
 ════════════════════════════════════════ */
 let _savePortfolioTimer = null;
 function savePortfolio() {
-  localStorage.setItem('portfolio_v1', JSON.stringify(portfolio));
+  if (authUser) localStorage.setItem(`portfolio_v1_${authUser}`, JSON.stringify(portfolio));
   clearTimeout(_savePortfolioTimer);
-  _savePortfolioTimer = setTimeout(() => {
-    if (!authToken) return;
-    apiFetch('/api/me/portfolio', { method:'PUT', body: JSON.stringify({ portfolio }) }).catch(()=>{});
-  }, 600);
+  _savePortfolioTimer = setTimeout(() => _flushPortfolio(), 600);
+}
+
+function _flushPortfolio() {
+  clearTimeout(_savePortfolioTimer);
+  if (!authToken) return;
+  if (authUser) localStorage.setItem(`portfolio_v1_${authUser}`, JSON.stringify(portfolio));
+  apiFetch('/api/me/portfolio', { method:'PUT', body: JSON.stringify({ portfolio }) }).catch(()=>{});
 }
 
 function renderChips() {
