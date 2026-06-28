@@ -391,6 +391,54 @@ def icons(filename):
 def api_version():
     return jsonify({"version": VERSION, "changelog": CHANGELOG})
 
+@app.route("/api/debug/<ticker>")
+def api_debug(ticker):
+    """각 yfinance 호출을 단계별로 테스트해 결과/오류를 JSON으로 반환"""
+    result = {}
+    t = yf.Ticker(ticker.upper())
+
+    # 1. 기본 info
+    try:
+        info = t.info
+        result["info"] = {
+            "ok": True,
+            "name": info.get("longName") or info.get("shortName"),
+            "price": info.get("regularMarketPrice") or info.get("currentPrice"),
+        }
+    except Exception as e:
+        result["info"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    # 2. earnings_dates
+    try:
+        ed = t.earnings_dates
+        if ed is None or ed.empty:
+            result["earnings_dates"] = {"ok": True, "rows": 0, "note": "비어있음"}
+        else:
+            reported = ed[ed["Reported EPS"].notna()]
+            result["earnings_dates"] = {"ok": True, "total_rows": len(ed), "reported_rows": len(reported)}
+    except Exception as e:
+        result["earnings_dates"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    # 3. quarterly_financials
+    try:
+        qf = t.quarterly_financials
+        if qf is None or qf.empty:
+            result["quarterly_financials"] = {"ok": True, "rows": 0, "note": "비어있음"}
+        else:
+            result["quarterly_financials"] = {"ok": True, "index": list(qf.index), "cols": len(qf.columns)}
+    except Exception as e:
+        result["quarterly_financials"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    # 4. 번역 테스트
+    try:
+        translated = _translate("earnings report", 50)
+        result["translation"] = {"ok": True, "result": translated}
+    except Exception as e:
+        result["translation"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    print(f"[debug/{ticker}] {result}")
+    return jsonify(result)
+
 @app.route("/api/search")
 def api_search():
     query = request.args.get("q", "").strip()
@@ -503,37 +551,46 @@ def api_earnings():
         def _fetch_eps():
             rows = []
             try:
+                print(f"[earnings:{ticker}] earnings_dates 조회 시작")
                 ed = t.earnings_dates
-                if ed is not None and not ed.empty:
-                    reported = ed[ed["Reported EPS"].notna()].copy()
-                    for dt, row in reported.iterrows():
-                        actual   = row.get("Reported EPS")
-                        estimate = row.get("EPS Estimate")
-                        surprise = row.get("Surprise(%)")
-                        rows.append({
-                            "date":        dt,
-                            "epsActual":   float(actual)   if pd.notna(actual)   else 0.0,
-                            "epsEstimate": float(estimate)  if pd.notna(estimate)  else 0.0,
-                            "surprisePct": float(surprise)  if pd.notna(surprise)  else 0.0,
-                        })
-            except Exception:
-                pass
+                if ed is None or ed.empty:
+                    print(f"[earnings:{ticker}] earnings_dates 비어있음")
+                    return rows
+                reported = ed[ed["Reported EPS"].notna()].copy()
+                print(f"[earnings:{ticker}] earnings_dates 보고된 행 수: {len(reported)}")
+                for dt, row in reported.iterrows():
+                    actual   = row.get("Reported EPS")
+                    estimate = row.get("EPS Estimate")
+                    surprise = row.get("Surprise(%)")
+                    rows.append({
+                        "date":        dt,
+                        "epsActual":   float(actual)   if pd.notna(actual)   else 0.0,
+                        "epsEstimate": float(estimate)  if pd.notna(estimate)  else 0.0,
+                        "surprisePct": float(surprise)  if pd.notna(surprise)  else 0.0,
+                    })
+            except Exception as e:
+                print(f"[earnings:{ticker}] _fetch_eps 오류: {type(e).__name__}: {e}")
             return rows
 
         def _fetch_rev():
             rev_list = []
             try:
+                print(f"[earnings:{ticker}] quarterly_financials 조회 시작")
                 qf = t.quarterly_financials
-                if qf is not None and not qf.empty:
-                    for label in ["Total Revenue", "Revenue"]:
-                        if label in qf.index:
-                            for col, val in qf.loc[label].items():
-                                if pd.notna(val):
-                                    rev_list.append((col, float(val)))
-                            break
+                if qf is None or qf.empty:
+                    print(f"[earnings:{ticker}] quarterly_financials 비어있음")
+                    return rev_list
+                print(f"[earnings:{ticker}] quarterly_financials 인덱스: {list(qf.index)}")
+                for label in ["Total Revenue", "Revenue"]:
+                    if label in qf.index:
+                        for col, val in qf.loc[label].items():
+                            if pd.notna(val):
+                                rev_list.append((col, float(val)))
+                        break
                 rev_list.sort(key=lambda x: x[0], reverse=True)
-            except Exception:
-                pass
+                print(f"[earnings:{ticker}] 매출 행 수: {len(rev_list)}")
+            except Exception as e:
+                print(f"[earnings:{ticker}] _fetch_rev 오류: {type(e).__name__}: {e}")
             return rev_list
 
         def _fetch_rev_estimate():
@@ -560,8 +617,8 @@ def api_earnings():
                             "estimate":    float(avg_raw),
                             "estimateFmt": _fmt_revenue(avg_raw),
                         }
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[earnings:{ticker}] _fetch_rev_estimate 오류: {type(e).__name__}: {e}")
             return rev_estimate_map
 
         with ThreadPoolExecutor(max_workers=3) as ex:
