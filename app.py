@@ -14,17 +14,99 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     DATA_DIR = BASE_DIR
 
-from flask import Flask, jsonify, request, send_file, Response
+from flask import Flask, jsonify, request, send_file, Response, g
 from flask_cors import CORS
 import yfinance as yf
 import pandas as pd
-import json, threading, time, re, webbrowser, socket
+import json, threading, time, re, webbrowser, socket, sqlite3
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from deep_translator import GoogleTranslator
+from werkzeug.security import generate_password_hash, check_password_hash
+from functools import wraps
+import jwt as pyjwt
 
 app = Flask(__name__, static_folder=BASE_DIR, static_url_path='')
 CORS(app)
+
+# ═══════════════════════════════════════════════════════════
+#  DB / Auth 설정
+# ═══════════════════════════════════════════════════════════
+DB_PATH        = os.path.join(DATA_DIR, "pt.db")
+JWT_SECRET     = os.environ.get("JWT_SECRET", "pt-jwt-secret-please-set-env")
+MASTER_USER    = os.environ.get("MASTER_USERNAME", "admin")
+MASTER_PASS    = os.environ.get("MASTER_PASSWORD", "Admin1234!")
+
+def _db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+def _init_db():
+    with _db() as c:
+        c.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                pw_hash  TEXT NOT NULL,
+                role     TEXT NOT NULL DEFAULT 'user',
+                created  TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS user_data (
+                user_id   INTEGER PRIMARY KEY,
+                portfolio TEXT DEFAULT '[]',
+                assets    TEXT DEFAULT '[]',
+                updated   TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+        """)
+        if not c.execute("SELECT 1 FROM users WHERE username=?", (MASTER_USER,)).fetchone():
+            c.execute("INSERT INTO users(username,pw_hash,role) VALUES(?,?,?)",
+                      (MASTER_USER, generate_password_hash(MASTER_PASS), "master"))
+            c.commit()
+
+_init_db()
+
+def _make_token(user_id: int, username: str, role: str) -> str:
+    return pyjwt.encode(
+        {"sub": user_id, "username": username, "role": role,
+         "exp": datetime.utcnow() + timedelta(days=7)},
+        JWT_SECRET, algorithm="HS256"
+    )
+
+def require_auth(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+        if not token:
+            return jsonify({"error": "인증이 필요합니다."}), 401
+        try:
+            payload = pyjwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            g.uid      = payload["sub"]
+            g.username = payload["username"]
+            g.role     = payload["role"]
+        except pyjwt.ExpiredSignatureError:
+            return jsonify({"error": "세션이 만료됐습니다. 다시 로그인하세요."}), 401
+        except Exception:
+            return jsonify({"error": "유효하지 않은 토큰입니다."}), 401
+        return f(*args, **kwargs)
+    return wrapper
+
+def require_master(f):
+    @wraps(f)
+    @require_auth
+    def wrapper(*args, **kwargs):
+        if g.role != "master":
+            return jsonify({"error": "관리자 권한이 필요합니다."}), 403
+        return f(*args, **kwargs)
+    return wrapper
+
+# ── 유저 데이터 초기화 헬퍼 ──────────────────────────────────────────────────
+def _ensure_user_data(c, user_id: int):
+    if not c.execute("SELECT 1 FROM user_data WHERE user_id=?", (user_id,)).fetchone():
+        c.execute("INSERT INTO user_data(user_id) VALUES(?)", (user_id,))
 
 VERSION = "1.3.0"
 CHANGELOG = [
@@ -390,6 +472,123 @@ def icons(filename):
 @app.route("/api/version")
 def api_version():
     return jsonify({"version": VERSION, "changelog": CHANGELOG})
+
+# ── 회원가입 ──────────────────────────────────────────────────────────────────
+@app.route("/api/auth/register", methods=["POST"])
+def api_register():
+    d = request.json or {}
+    username = (d.get("username") or "").strip()
+    password = (d.get("password") or "").strip()
+    if not username or not password:
+        return jsonify({"error": "아이디와 비밀번호를 입력하세요."}), 400
+    if len(username) < 3:
+        return jsonify({"error": "아이디는 3자 이상이어야 합니다."}), 400
+    if len(password) < 6:
+        return jsonify({"error": "비밀번호는 6자 이상이어야 합니다."}), 400
+    try:
+        with _db() as c:
+            c.execute("INSERT INTO users(username,pw_hash) VALUES(?,?)",
+                      (username, generate_password_hash(password)))
+            uid = c.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()["id"]
+            _ensure_user_data(c, uid)
+            c.commit()
+        return jsonify({"message": "계정이 생성됐습니다."})
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "이미 사용 중인 아이디입니다."}), 409
+
+# ── 로그인 ────────────────────────────────────────────────────────────────────
+@app.route("/api/auth/login", methods=["POST"])
+def api_login():
+    d = request.json or {}
+    username = (d.get("username") or "").strip()
+    password = (d.get("password") or "").strip()
+    with _db() as c:
+        row = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+    if not row or not check_password_hash(row["pw_hash"], password):
+        return jsonify({"error": "아이디 또는 비밀번호가 올바르지 않습니다."}), 401
+    token = _make_token(row["id"], row["username"], row["role"])
+    return jsonify({"token": token, "username": row["username"], "role": row["role"]})
+
+# ── 내 정보 ───────────────────────────────────────────────────────────────────
+@app.route("/api/auth/me")
+@require_auth
+def api_me():
+    return jsonify({"user_id": g.uid, "username": g.username, "role": g.role})
+
+# ── 유저 목록 (master) ────────────────────────────────────────────────────────
+@app.route("/api/users")
+@require_master
+def api_users():
+    with _db() as c:
+        rows = c.execute("SELECT id,username,role,created FROM users ORDER BY id").fetchall()
+    return jsonify([dict(r) for r in rows])
+
+# ── 유저 삭제 (master) ────────────────────────────────────────────────────────
+@app.route("/api/users/<int:uid>", methods=["DELETE"])
+@require_master
+def api_delete_user(uid):
+    if uid == g.uid:
+        return jsonify({"error": "자신의 계정은 삭제할 수 없습니다."}), 400
+    with _db() as c:
+        c.execute("DELETE FROM users WHERE id=?", (uid,))
+        c.commit()
+    return jsonify({"message": "삭제됐습니다."})
+
+# ── 유저 비밀번호 변경 (master) ───────────────────────────────────────────────
+@app.route("/api/users/<int:uid>/password", methods=["PUT"])
+@require_master
+def api_reset_password(uid):
+    d = request.json or {}
+    new_pw = (d.get("password") or "").strip()
+    if len(new_pw) < 6:
+        return jsonify({"error": "비밀번호는 6자 이상이어야 합니다."}), 400
+    with _db() as c:
+        c.execute("UPDATE users SET pw_hash=? WHERE id=?", (generate_password_hash(new_pw), uid))
+        c.commit()
+    return jsonify({"message": "비밀번호가 변경됐습니다."})
+
+# ── 내 데이터 로드 ────────────────────────────────────────────────────────────
+@app.route("/api/me/data")
+@require_auth
+def api_me_data():
+    with _db() as c:
+        _ensure_user_data(c, g.uid)
+        c.commit()
+        row = c.execute("SELECT portfolio,assets FROM user_data WHERE user_id=?", (g.uid,)).fetchone()
+    return jsonify({
+        "portfolio": json.loads(row["portfolio"]),
+        "assets":    json.loads(row["assets"]),
+    })
+
+# ── 포트폴리오 저장 ───────────────────────────────────────────────────────────
+@app.route("/api/me/portfolio", methods=["PUT"])
+@require_auth
+def api_save_portfolio():
+    data = request.json or {}
+    portfolio = data.get("portfolio", [])
+    with _db() as c:
+        _ensure_user_data(c, g.uid)
+        c.execute("""INSERT INTO user_data(user_id,portfolio) VALUES(?,?)
+                     ON CONFLICT(user_id) DO UPDATE SET portfolio=excluded.portfolio,
+                     updated=datetime('now')""",
+                  (g.uid, json.dumps(portfolio, ensure_ascii=False)))
+        c.commit()
+    return jsonify({"ok": True})
+
+# ── 자산 저장 ─────────────────────────────────────────────────────────────────
+@app.route("/api/me/assets", methods=["PUT"])
+@require_auth
+def api_save_assets():
+    data = request.json or {}
+    assets = data.get("assets", [])
+    with _db() as c:
+        _ensure_user_data(c, g.uid)
+        c.execute("""INSERT INTO user_data(user_id,assets) VALUES(?,?)
+                     ON CONFLICT(user_id) DO UPDATE SET assets=excluded.assets,
+                     updated=datetime('now')""",
+                  (g.uid, json.dumps(assets, ensure_ascii=False)))
+        c.commit()
+    return jsonify({"ok": True})
 
 @app.route("/api/debug/<ticker>")
 def api_debug(ticker):
