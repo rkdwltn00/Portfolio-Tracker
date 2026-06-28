@@ -536,7 +536,7 @@ body { padding-bottom: env(safe-area-inset-bottom); }
     <span class="user-name" id="userNameDisplay"></span>
   </div>
   <button class="btn btn-ghost btn-sm" id="btnLogout">로그아웃</button>
-  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.0.3</button>
+  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.0.4</button>
   <button class="btn btn-icon btn-ghost" id="btnTheme" title="테마 전환">🌙</button>
 </header>
 
@@ -840,7 +840,22 @@ async function doRegister() {
   } catch { showAuthErr('registerErr','서버 연결 실패'); }
 }
 
-document.getElementById('btnLogout').addEventListener('click', () => {
+document.getElementById('btnLogout').addEventListener('click', async () => {
+  // 1. 상태 지우기 전에 서버에 즉시 저장 (현재 authToken이 살아있는 동안)
+  if (authToken && authUser) {
+    localStorage.setItem(`assets_v1_${authUser}`,    JSON.stringify(assets));
+    localStorage.setItem(`portfolio_v1_${authUser}`, JSON.stringify(portfolio));
+    const hdrs = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` };
+    try {
+      await Promise.all([
+        fetch('/api/me/assets',    { method:'PUT', headers: hdrs, body: JSON.stringify({ assets }) }),
+        fetch('/api/me/portfolio', { method:'PUT', headers: hdrs, body: JSON.stringify({ portfolio }) }),
+      ]);
+    } catch {}
+  }
+  // 2. 이후 상태 초기화
+  clearTimeout(_saveAssetsTimer);
+  clearTimeout(_savePortfolioTimer);
   authToken = ''; authUser = ''; authRole = '';
   localStorage.removeItem('pt_token');
   portfolio = []; assets = [];
@@ -852,38 +867,50 @@ document.getElementById('btnLogout').addEventListener('click', () => {
 async function afterLogin() {
   updateUserBadge();
   showApp();
-  // 서버에서 사용자 데이터 불러오기
+
+  // ── localStorage 백업 읽기 (항상 먼저, 파싱 실패 시 null)
+  const _lsParse = key => { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } };
+  const lsAssets    = _lsParse(`assets_v1_${authUser}`);
+  const lsPortfolio = _lsParse(`portfolio_v1_${authUser}`) || _lsParse('portfolio_v1');
+
+  // ── 서버 데이터 로드 (실패해도 localStorage로 폴백)
+  let serverAssets = null, serverPortfolio = null;
   try {
     const r = await apiFetch('/api/me/data');
-    const d = await r.json();
-    // 포트폴리오: 서버 데이터 우선, 없으면 localStorage → 기본값
-    if (d.portfolio && d.portfolio.length > 0) {
-      portfolio = d.portfolio;
-    } else {
-      const ls = localStorage.getItem(`portfolio_v1_${d.username || authUser}`)
-             || localStorage.getItem('portfolio_v1');
-      portfolio = ls ? JSON.parse(ls) : DEFAULT_PORTFOLIO;
-      savePortfolio();
+    if (r.ok) {
+      const d = await r.json();
+      serverAssets    = Array.isArray(d.assets)    ? d.assets    : null;
+      serverPortfolio = Array.isArray(d.portfolio) ? d.portfolio : null;
     }
-    // 자산: 서버 데이터 우선, 비어있으면 localStorage 백업 복원
-    if (d.assets && d.assets.length > 0) {
-      assets = d.assets;
-    } else {
-      const lsKey = `assets_v1_${authUser}`;
-      const lsAssets = localStorage.getItem(lsKey);
-      assets = lsAssets ? JSON.parse(lsAssets) : [];
-      if (assets.length) saveAssets(); // 서버에 재동기화
-    }
-  } catch {
-    const ls = localStorage.getItem(`portfolio_v1_${authUser}`)
-            || localStorage.getItem('portfolio_v1');
-    portfolio = ls ? JSON.parse(ls) : DEFAULT_PORTFOLIO;
-    const lsAssets = localStorage.getItem(`assets_v1_${authUser}`);
-    assets = lsAssets ? JSON.parse(lsAssets) : [];
+  } catch {}
+
+  // ── 포트폴리오 결정: 서버 → localStorage → 기본값
+  if (serverPortfolio && serverPortfolio.length > 0) {
+    portfolio = serverPortfolio;
+    // 서버 데이터가 있으면 localStorage도 최신으로 갱신
+    localStorage.setItem(`portfolio_v1_${authUser}`, JSON.stringify(portfolio));
+  } else if (lsPortfolio && lsPortfolio.length > 0) {
+    portfolio = lsPortfolio;
+    _serverSavePortfolio();   // 서버가 비어있었으면 즉시 재동기화
+  } else {
+    portfolio = DEFAULT_PORTFOLIO;
+    savePortfolio();
   }
+
+  // ── 자산 결정: 서버 → localStorage → 빈 배열
+  if (serverAssets && serverAssets.length > 0) {
+    assets = serverAssets;
+    localStorage.setItem(_assetsLsKey(), JSON.stringify(assets));
+  } else if (lsAssets && lsAssets.length > 0) {
+    assets = lsAssets;
+    _serverSaveAssets();      // 서버가 비어있었으면 즉시 재동기화
+  } else {
+    assets = [];
+  }
+
   renderChips();
   renderAssets();
-  syncAssetsToPortfolio();   // 자산에 있는 종목 포트폴리오에 자동 반영
+  syncAssetsToPortfolio();
   if (portfolio.length) selectTicker(portfolio[0].ticker);
   loadVersion();
   if (authRole === 'master') document.getElementById('btnAdmin').style.display = '';
@@ -987,10 +1014,16 @@ document.querySelectorAll('.top-tab-btn').forEach(btn => {
   });
 });
 
-// 탭/브라우저 닫기 전 디바운스 대기 없이 즉시 저장
+// 페이지 닫기 전 keepalive fetch로 강제 저장 (async fetch는 브라우저가 취소함)
 window.addEventListener('beforeunload', () => {
-  _flushAssets();
-  _flushPortfolio();
+  if (!authToken || !authUser) return;
+  const hdrs = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` };
+  // localStorage 즉시 갱신
+  localStorage.setItem(`assets_v1_${authUser}`,    JSON.stringify(assets));
+  localStorage.setItem(`portfolio_v1_${authUser}`, JSON.stringify(portfolio));
+  // keepalive: true → 페이지 언로드 후에도 브라우저가 요청 완료 보장
+  fetch('/api/me/assets',    { method:'PUT', headers: hdrs, body: JSON.stringify({ assets }),    keepalive: true });
+  fetch('/api/me/portfolio', { method:'PUT', headers: hdrs, body: JSON.stringify({ portfolio }), keepalive: true });
 });
 
 /* ════════════════════════════════════════
@@ -1000,17 +1033,21 @@ let _saveAssetsTimer = null;
 function _assetsLsKey() { return `assets_v1_${authUser}`; }
 
 function saveAssets() {
-  // localStorage 즉시 백업 (브라우저 닫혀도 안전)
+  // ① localStorage 즉시 저장 (동기, 확실)
   if (authUser) localStorage.setItem(_assetsLsKey(), JSON.stringify(assets));
+  // ② 서버 저장 — 300ms 디바운스 (빠른 연속 변경 묶기)
   clearTimeout(_saveAssetsTimer);
-  _saveAssetsTimer = setTimeout(() => _flushAssets(), 600);
+  _saveAssetsTimer = setTimeout(() => _serverSaveAssets(), 300);
 }
 
-function _flushAssets() {
-  clearTimeout(_saveAssetsTimer);
-  if (!authToken) return;
-  if (authUser) localStorage.setItem(_assetsLsKey(), JSON.stringify(assets));
-  apiFetch('/api/me/assets', { method:'PUT', body: JSON.stringify({ assets }) }).catch(()=>{});
+async function _serverSaveAssets() {
+  if (!authToken || !authUser) return;
+  // localStorage 재확인
+  localStorage.setItem(_assetsLsKey(), JSON.stringify(assets));
+  try {
+    const r = await apiFetch('/api/me/assets', { method:'PUT', body: JSON.stringify({ assets }) });
+    if (!r.ok) console.warn('[PT] assets 서버 저장 실패:', r.status);
+  } catch (e) { console.warn('[PT] assets 서버 저장 오류:', e); }
 }
 
 /* 내 자산에 등록된 종목을 포트폴리오 칩에 자동 동기화 */
@@ -1270,16 +1307,20 @@ function renderPerformance(ticker) {
 ════════════════════════════════════════ */
 let _savePortfolioTimer = null;
 function savePortfolio() {
+  // ① localStorage 즉시 저장
   if (authUser) localStorage.setItem(`portfolio_v1_${authUser}`, JSON.stringify(portfolio));
+  // ② 서버 저장 — 300ms 디바운스
   clearTimeout(_savePortfolioTimer);
-  _savePortfolioTimer = setTimeout(() => _flushPortfolio(), 600);
+  _savePortfolioTimer = setTimeout(() => _serverSavePortfolio(), 300);
 }
 
-function _flushPortfolio() {
-  clearTimeout(_savePortfolioTimer);
-  if (!authToken) return;
-  if (authUser) localStorage.setItem(`portfolio_v1_${authUser}`, JSON.stringify(portfolio));
-  apiFetch('/api/me/portfolio', { method:'PUT', body: JSON.stringify({ portfolio }) }).catch(()=>{});
+async function _serverSavePortfolio() {
+  if (!authToken || !authUser) return;
+  localStorage.setItem(`portfolio_v1_${authUser}`, JSON.stringify(portfolio));
+  try {
+    const r = await apiFetch('/api/me/portfolio', { method:'PUT', body: JSON.stringify({ portfolio }) });
+    if (!r.ok) console.warn('[PT] portfolio 서버 저장 실패:', r.status);
+  } catch (e) { console.warn('[PT] portfolio 서버 저장 오류:', e); }
 }
 
 function renderChips() {

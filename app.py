@@ -187,8 +187,19 @@ def _ensure_user_data(c, user_id: int):
     if not c.execute("SELECT 1 FROM user_data WHERE user_id=?", (user_id,)).fetchone():
         c.execute("INSERT INTO user_data(user_id) VALUES(?)", (user_id,))
 
-VERSION = "2.0.3"
+VERSION = "2.0.4"
 CHANGELOG = [
+    {
+        "version": "2.0.4",
+        "date": "2026-06-29",
+        "changes": [
+            "자산 데이터 영속성 3중 보장: localStorage 즉시저장 → 서버 비동기저장 → keepalive 페이지종료저장",
+            "로그아웃 버그 수정: 상태 지우기 전 서버 저장 await 처리 (authToken 소멸 전 저장 보장)",
+            "beforeunload keepalive fetch: 브라우저 종료 시 fetch 취소 방지",
+            "afterLogin 복원 로직 개선: 서버+localStorage 병합, 빈 서버 데이터면 localStorage에서 즉시 재동기화",
+            "자산 등록 후 포트폴리오 탭 자동 반영(syncAssetsToPortfolio)",
+        ]
+    },
     {
         "version": "2.0.3",
         "date": "2026-06-29",
