@@ -47,7 +47,7 @@ _USE_PG        = bool(DATABASE_URL)
 DB_PATH        = os.path.join(DATA_DIR, "pt.db")
 JWT_SECRET     = os.environ.get("JWT_SECRET", "pt-jwt-secret-please-set-env")
 MASTER_USER    = os.environ.get("MASTER_USERNAME", "admin")
-MASTER_PASS    = os.environ.get("MASTER_PASSWORD", "Admin1234!")
+MASTER_PASS    = os.environ.get("MASTER_PASSWORD", "admin")
 
 class _DBConn:
     """SQLite / PostgreSQL 통합 래퍼
@@ -141,9 +141,14 @@ def _init_db():
         """
     with _db() as c:
         c.executescript(ddl)
-        if not c.execute("SELECT 1 FROM users WHERE username=?", (MASTER_USER,)).fetchone():
+        existing = c.execute("SELECT id FROM users WHERE username=?", (MASTER_USER,)).fetchone()
+        if not existing:
             c.execute("INSERT INTO users(username,pw_hash,role) VALUES(?,?,?)",
                       (MASTER_USER, generate_password_hash(MASTER_PASS), "master"))
+        else:
+            # 환경변수나 기본값 변경 시 항상 최신 비밀번호로 갱신
+            c.execute("UPDATE users SET pw_hash=? WHERE username=?",
+                      (generate_password_hash(MASTER_PASS), MASTER_USER))
         c.commit()
 
 _init_db()
@@ -187,7 +192,7 @@ def _ensure_user_data(c, user_id: int):
     if not c.execute("SELECT 1 FROM user_data WHERE user_id=?", (user_id,)).fetchone():
         c.execute("INSERT INTO user_data(user_id) VALUES(?)", (user_id,))
 
-VERSION = "2.0.8"
+VERSION = "2.0.9"
 CHANGELOG = [
     {
         "version": "2.0.5",
@@ -738,7 +743,41 @@ def api_me():
 def api_users():
     with _db() as c:
         rows = c.execute("SELECT id,username,role,created FROM users ORDER BY id").fetchall()
-    return jsonify([dict(r) for r in rows])
+        result = []
+        for row in rows:
+            d = dict(row)
+            ud = c.execute("SELECT assets FROM user_data WHERE user_id=?", (row["id"],)).fetchone()
+            try:
+                d["asset_count"] = len(json.loads(ud["assets"] or "[]")) if ud else 0
+            except Exception:
+                d["asset_count"] = 0
+            result.append(d)
+    return jsonify(result)
+
+# ── 유저 생성 (master) ────────────────────────────────────────────────────────
+@app.route("/api/users", methods=["POST"])
+@require_master
+def api_create_user():
+    d = request.json or {}
+    username = (d.get("username") or "").strip()
+    password = (d.get("password") or "").strip()
+    if not username or not password:
+        return jsonify({"error": "아이디와 비밀번호를 입력하세요."}), 400
+    if len(username) < 3:
+        return jsonify({"error": "아이디는 3자 이상이어야 합니다."}), 400
+    try:
+        with _db() as c:
+            c.execute("INSERT INTO users(username,pw_hash) VALUES(?,?)",
+                      (username, generate_password_hash(password)))
+            uid = c.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()["id"]
+            _ensure_user_data(c, uid)
+            c.commit()
+        return jsonify({"message": f"'{username}' 계정이 생성됐습니다."})
+    except Exception as e:
+        err = str(e).lower()
+        if "unique" in err or "duplicate" in err:
+            return jsonify({"error": "이미 사용 중인 아이디입니다."}), 409
+        return jsonify({"error": "서버 오류가 발생했습니다."}), 500
 
 # ── 유저 삭제 (master) ────────────────────────────────────────────────────────
 @app.route("/api/users/<int:uid>", methods=["DELETE"])
@@ -747,9 +786,12 @@ def api_delete_user(uid):
     if uid == g.uid:
         return jsonify({"error": "자신의 계정은 삭제할 수 없습니다."}), 400
     with _db() as c:
+        row = c.execute("SELECT username FROM users WHERE id=?", (uid,)).fetchone()
+        if not row:
+            return jsonify({"error": "존재하지 않는 계정입니다."}), 404
         c.execute("DELETE FROM users WHERE id=?", (uid,))
         c.commit()
-    return jsonify({"message": "삭제됐습니다."})
+    return jsonify({"message": f"'{row['username']}' 계정이 삭제됐습니다."})
 
 # ── 유저 비밀번호 변경 (master) ───────────────────────────────────────────────
 @app.route("/api/users/<int:uid>/password", methods=["PUT"])
@@ -757,12 +799,15 @@ def api_delete_user(uid):
 def api_reset_password(uid):
     d = request.json or {}
     new_pw = (d.get("password") or "").strip()
-    if len(new_pw) < 6:
-        return jsonify({"error": "비밀번호는 6자 이상이어야 합니다."}), 400
+    if not new_pw:
+        return jsonify({"error": "비밀번호를 입력하세요."}), 400
     with _db() as c:
+        row = c.execute("SELECT username FROM users WHERE id=?", (uid,)).fetchone()
+        if not row:
+            return jsonify({"error": "존재하지 않는 계정입니다."}), 404
         c.execute("UPDATE users SET pw_hash=? WHERE id=?", (generate_password_hash(new_pw), uid))
         c.commit()
-    return jsonify({"message": "비밀번호가 변경됐습니다."})
+    return jsonify({"message": f"'{row['username']}' 비밀번호가 변경됐습니다."})
 
 # ── 내 데이터 로드 ────────────────────────────────────────────────────────────
 @app.route("/api/me/data")
