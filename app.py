@@ -198,7 +198,7 @@ _init_db()
 
 def _make_token(user_id: int, username: str, role: str) -> str:
     return pyjwt.encode(
-        {"sub": user_id, "username": username, "role": role,
+        {"sub": str(user_id), "username": username, "role": role,   # sub은 문자열 필수 (PyJWT 2.8+)
          "exp": datetime.utcnow() + timedelta(days=7)},
         JWT_SECRET, algorithm="HS256"
     )
@@ -211,7 +211,7 @@ def require_auth(f):
             return jsonify({"error": "인증이 필요합니다."}), 401
         try:
             payload = pyjwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-            g.uid      = payload["sub"]
+            g.uid      = int(payload["sub"])   # sub은 str로 발급, DB 조회용 int로 변환
             g.username = payload["username"]
             g.role     = payload["role"]
         except pyjwt.ExpiredSignatureError:
