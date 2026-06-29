@@ -544,7 +544,7 @@ body { padding-bottom: env(safe-area-inset-bottom); }
     <span class="user-name" id="userNameDisplay"></span>
   </div>
   <button class="btn btn-ghost btn-sm" id="btnLogout">로그아웃</button>
-  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.0.7</button>
+  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.0.8</button>
   <button class="btn btn-icon btn-ghost" id="btnTheme" title="테마 전환">🌙</button>
 </header>
 
@@ -863,8 +863,6 @@ document.getElementById('btnLogout').addEventListener('click', async () => {
     } catch {}
   }
   // 2. 이후 상태 초기화
-  clearTimeout(_saveAssetsTimer);
-  clearTimeout(_savePortfolioTimer);
   authToken = ''; authUser = ''; authRole = '';
   localStorage.removeItem('pt_token');
   portfolio = []; assets = [];
@@ -902,7 +900,7 @@ async function afterLogin() {
     localStorage.setItem(_assetsLsKey(), JSON.stringify(assets));
   } else if (lsAssets && lsAssets.length > 0) {
     assets = lsAssets;
-    _serverSaveAssets();
+    await saveAssets();   // 서버가 비었으면(재시작 등) localStorage 데이터를 즉시 재동기화
   } else {
     assets = [];
   }
@@ -913,11 +911,10 @@ async function afterLogin() {
     localStorage.setItem(`portfolio_v1_${authUser}`, JSON.stringify(portfolio));
   } else if (lsPortfolio && lsPortfolio.length > 0) {
     portfolio = lsPortfolio;
-    _serverSavePortfolio();
+    await savePortfolio();
   } else if (assets.length > 0) {
-    // 저장된 portfolio가 없으면 내 자산 기반으로 초기화
     portfolio = assets.map(a => ({ ticker: a.ticker, name: a.name }));
-    savePortfolio();
+    await savePortfolio();
   } else {
     portfolio = [];
   }
@@ -945,6 +942,15 @@ async function _checkDbType() {
     }
   } catch {}
 }
+
+/* 30초마다 서버에 현재 상태 동기화 — 탭 방치·장시간 사용 시 데이터 유실 방지 */
+setInterval(async () => {
+  if (!authToken || !authUser) return;
+  try {
+    await apiFetch('/api/me/assets',    { method: 'PUT', body: JSON.stringify({ assets }) });
+    await apiFetch('/api/me/portfolio', { method: 'PUT', body: JSON.stringify({ portfolio }) });
+  } catch {}
+}, 30000);
 
 function updateUserBadge() {
   document.getElementById('userAvatar').textContent = (authUser || '?')[0].toUpperCase();
@@ -1058,23 +1064,14 @@ window.addEventListener('beforeunload', () => {
 /* ════════════════════════════════════════
    내 자산 — Holdings
 ════════════════════════════════════════ */
-let _saveAssetsTimer = null;
 function _assetsLsKey() { return `assets_v1_${authUser}`; }
 
-function saveAssets() {
-  // ① localStorage 즉시 저장 (동기, 확실)
+/* 자산 저장 — localStorage 즉시 + 서버 즉시(await) */
+async function saveAssets() {
   if (authUser) localStorage.setItem(_assetsLsKey(), JSON.stringify(assets));
-  // ② 서버 저장 — 300ms 디바운스 (빠른 연속 변경 묶기)
-  clearTimeout(_saveAssetsTimer);
-  _saveAssetsTimer = setTimeout(() => _serverSaveAssets(), 300);
-}
-
-async function _serverSaveAssets() {
   if (!authToken || !authUser) return;
-  // localStorage 재확인
-  localStorage.setItem(_assetsLsKey(), JSON.stringify(assets));
   try {
-    const r = await apiFetch('/api/me/assets', { method:'PUT', body: JSON.stringify({ assets }) });
+    const r = await apiFetch('/api/me/assets', { method: 'PUT', body: JSON.stringify({ assets }) });
     if (!r.ok) console.warn('[PT] assets 서버 저장 실패:', r.status);
   } catch (e) { console.warn('[PT] assets 서버 저장 오류:', e); }
 }
@@ -1350,20 +1347,12 @@ function renderPerformance(ticker) {
 /* ════════════════════════════════════════
    Portfolio Chips
 ════════════════════════════════════════ */
-let _savePortfolioTimer = null;
-function savePortfolio() {
-  // ① localStorage 즉시 저장
+/* 포트폴리오 저장 — localStorage 즉시 + 서버 즉시(await) */
+async function savePortfolio() {
   if (authUser) localStorage.setItem(`portfolio_v1_${authUser}`, JSON.stringify(portfolio));
-  // ② 서버 저장 — 300ms 디바운스
-  clearTimeout(_savePortfolioTimer);
-  _savePortfolioTimer = setTimeout(() => _serverSavePortfolio(), 300);
-}
-
-async function _serverSavePortfolio() {
   if (!authToken || !authUser) return;
-  localStorage.setItem(`portfolio_v1_${authUser}`, JSON.stringify(portfolio));
   try {
-    const r = await apiFetch('/api/me/portfolio', { method:'PUT', body: JSON.stringify({ portfolio }) });
+    const r = await apiFetch('/api/me/portfolio', { method: 'PUT', body: JSON.stringify({ portfolio }) });
     if (!r.ok) console.warn('[PT] portfolio 서버 저장 실패:', r.status);
   } catch (e) { console.warn('[PT] portfolio 서버 저장 오류:', e); }
 }

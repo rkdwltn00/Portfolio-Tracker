@@ -187,7 +187,7 @@ def _ensure_user_data(c, user_id: int):
     if not c.execute("SELECT 1 FROM user_data WHERE user_id=?", (user_id,)).fetchone():
         c.execute("INSERT INTO user_data(user_id) VALUES(?)", (user_id,))
 
-VERSION = "2.0.7"
+VERSION = "2.0.8"
 CHANGELOG = [
     {
         "version": "2.0.5",
