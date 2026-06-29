@@ -519,6 +519,14 @@ body { padding-bottom: env(safe-area-inset-bottom); }
   </div>
 </div>
 
+<!-- DB 경고 배너 (SQLite 사용 시) -->
+<div id="dbWarnBanner" style="display:none;background:#fff3cd;border-bottom:2px solid #ffc107;color:#856404;font-size:13px;padding:8px 16px;text-align:center;z-index:9999;position:relative;">
+  ⚠️ <strong>서버 DB 미설정</strong> — 현재 임시 저장소(SQLite) 사용 중입니다.
+  <strong>핸드폰 ↔ PC 간 데이터 동기화 불가</strong>, 서버 재시작 시 데이터 소멸 위험.
+  &nbsp;<a href="https://render.com/docs/databases" target="_blank" style="color:#533f03;text-decoration:underline;">Render PostgreSQL 설정하기 →</a>
+  &nbsp;<button onclick="document.getElementById('dbWarnBanner').style.display='none'" style="background:none;border:none;cursor:pointer;font-size:16px;color:#533f03;vertical-align:middle;">✕</button>
+</div>
+
 <!-- Header -->
 <header class="header" id="mainHeader" style="display:none">
   <div class="header-logo">Portfolio<span>Tracker</span></div>
@@ -536,7 +544,7 @@ body { padding-bottom: env(safe-area-inset-bottom); }
     <span class="user-name" id="userNameDisplay"></span>
   </div>
   <button class="btn btn-ghost btn-sm" id="btnLogout">로그아웃</button>
-  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.0.6</button>
+  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.0.7</button>
   <button class="btn btn-icon btn-ghost" id="btnTheme" title="테마 전환">🌙</button>
 </header>
 
@@ -922,6 +930,20 @@ async function afterLogin() {
   loadVersion();
   if (authRole === 'master') document.getElementById('btnAdmin').style.display = '';
   else document.getElementById('btnAdmin').style.display = 'none';
+  // DB 타입 확인 — SQLite면 경고 배너 표시
+  _checkDbType();
+}
+
+async function _checkDbType() {
+  try {
+    const r = await fetch('/api/db-type');
+    if (r.ok) {
+      const d = await r.json();
+      if (d.type !== 'postgresql') {
+        document.getElementById('dbWarnBanner').style.display = '';
+      }
+    }
+  } catch {}
 }
 
 function updateUserBadge() {

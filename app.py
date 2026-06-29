@@ -187,7 +187,7 @@ def _ensure_user_data(c, user_id: int):
     if not c.execute("SELECT 1 FROM user_data WHERE user_id=?", (user_id,)).fetchone():
         c.execute("INSERT INTO user_data(user_id) VALUES(?)", (user_id,))
 
-VERSION = "2.0.6"
+VERSION = "2.0.7"
 CHANGELOG = [
     {
         "version": "2.0.5",
@@ -681,6 +681,10 @@ def icons(filename):
 @app.route("/api/version")
 def api_version():
     return jsonify({"version": VERSION, "changelog": CHANGELOG})
+
+@app.route("/api/db-type")
+def api_db_type():
+    return jsonify({"type": "postgresql" if _USE_PG else "sqlite"})
 
 # ── 회원가입 ──────────────────────────────────────────────────────────────────
 @app.route("/api/auth/register", methods=["POST"])
