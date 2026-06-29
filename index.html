@@ -432,19 +432,51 @@ body { padding-bottom: env(safe-area-inset-bottom); }
 #iosHint::after { content:''; position:absolute; bottom:-8px; left:50%; transform:translateX(-50%); border:8px solid transparent; border-bottom:none; border-top-color:#1a1f3e; }
 
 /* ── Responsive ── */
+@media (max-width: 768px) {
+  .main { padding: 20px 14px; }
+  .assets-summary { flex-wrap: wrap; gap: 10px; }
+  .summary-item { min-width: 130px; }
+}
 @media (max-width: 600px) {
+  :root { --header-h: 56px; }
   .header { padding: 0 14px; gap: 8px; }
   .header-logo { font-size: 15px; }
   .user-name { display: none; }
-  .main { padding: 16px 12px; }
+  .main { padding: 14px 10px; }
   .stock-price { font-size: 22px; }
   .eq-metric-value { font-size: 20px; }
-  .tabs-nav, .top-tabs-nav { overflow-x: auto; }
-  .tab-btn { font-size: 12px; padding: 12px 8px; }
-  .assets-add-row { gap: 6px; }
-  .assets-input { width: 100px; }
-  .assets-input.cost { width: 100px; }
-  .assets-table th, .assets-table td { padding: 10px 10px; font-size: 13px; }
+  /* 탭 터치 영역 확대 */
+  .tabs-nav { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .top-tabs-nav { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .tab-btn { font-size: 12px; padding: 13px 10px; white-space: nowrap; }
+  .top-tab-btn { font-size: 13px; padding: 15px 10px; }
+  /* 자산 추가 폼: 모바일 세로 배치 */
+  .assets-add-row { flex-direction: column; gap: 10px; }
+  .assets-add-row .field { width: 100%; }
+  .assets-input { width: 100% !important; font-size: 16px; /* iOS 자동확대 방지 */ }
+  #btnAddAsset { width: 100%; padding: 12px; font-size: 15px; }
+  /* 포트폴리오 검색 입력 */
+  .ticker-input { font-size: 16px; /* iOS 자동확대 방지 */ max-width: 100%; }
+  .add-row { flex-wrap: wrap; gap: 8px; }
+  /* 자산 테이블: 가로 스크롤 */
+  .assets-card { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .assets-table { min-width: 500px; }
+  .assets-table th, .assets-table td { padding: 10px 8px; font-size: 12px; }
+  /* 성과 지표 그리드 */
+  .perf-grid { grid-template-columns: 1fr 1fr; }
+  .perf-item-value { font-size: 18px; }
+  .perf-item-value.big { font-size: 22px; }
+  /* 요약 카드 */
+  .assets-summary { padding: 14px 14px; }
+  .summary-value { font-size: 16px; }
+  /* 포트폴리오 바 */
+  .portfolio-bar { padding: 14px 14px; }
+}
+@media (max-width: 380px) {
+  .main { padding: 10px 8px; }
+  .header { padding: 0 10px; }
+  .top-tab-btn { font-size: 12px; padding: 13px 6px; }
+  .stock-price { font-size: 20px; }
 }
 </style>
 </head>
@@ -1458,9 +1490,11 @@ async function refreshAssetPrices() {
     try {
       const r = await fetch(`/api/stock/price?ticker=${a.ticker}`);
       const d = await r.json();
-      if (!d.error && d.price != null) _assetPrices.set(a.ticker, { price: d.price, currency: d.currency });
+      if (!d.error && d.price != null) {
+        _assetPrices.set(a.ticker, { price: d.price, currency: d.currency });
+        renderAssets(); // 가격 수신 즉시 해당 행 갱신
+      }
     } catch {}
-    renderAssets();
   }
 }
 
@@ -1611,7 +1645,10 @@ btnAdd.addEventListener('click', () => {
 ════════════════════════════════════════ */
 function selectTicker(ticker) {
   activeTicker = ticker;
-  renderChips();
+  // 칩 전체 재생성 대신 active 클래스만 토글 (DOM rebuild 방지)
+  document.querySelectorAll('#portfolioChips .chip').forEach(c => {
+    c.classList.toggle('active', c.dataset.ticker === ticker);
+  });
   document.getElementById('stockPanel').classList.add('visible');
   document.getElementById('emptyState').style.display = 'none';
   const p = portfolio.find(x => x.ticker === ticker);

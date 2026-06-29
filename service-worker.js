@@ -1,5 +1,5 @@
 /* Portfolio Tracker – Service Worker */
-const CACHE   = 'pt-v2.1.2';
+const CACHE   = 'pt-v2.1.3';
 const STATIC  = [
   '/',
   '/manifest.json',

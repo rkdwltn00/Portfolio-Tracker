@@ -258,8 +258,20 @@ def _save_user_field(c, user_id: int, field: str, value: str):
     except Exception:
         pass
 
-VERSION = "2.1.2"
+VERSION = "2.1.3"
 CHANGELOG = [
+    {
+        "version": "2.1.3",
+        "date": "2026-06-30",
+        "changes": [
+            "모바일 반응형 UI 개선: 화면 크기별(768px/600px/380px) 최적화 레이아웃 적용",
+            "자산 추가 폼 모바일 세로 배치 및 iOS 자동확대(zoom) 방지 (font-size: 16px)",
+            "자산 테이블 모바일 가로 스크롤 지원",
+            "탭 버튼 터치 영역 확대 및 성과 지표 2열 그리드로 개선",
+            "탭 전환 성능 개선: selectTicker 칩 클릭 시 DOM 전체 재생성 대신 active 클래스 토글만 수행",
+            "refreshAssetPrices: 가격 오류 응답 시 불필요한 renderAssets 호출 제거",
+        ]
+    },
     {
         "version": "2.1.2",
         "date": "2026-06-30",
