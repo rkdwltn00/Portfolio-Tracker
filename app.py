@@ -192,8 +192,53 @@ def _ensure_user_data(c, user_id: int):
     if not c.execute("SELECT 1 FROM user_data WHERE user_id=?", (user_id,)).fetchone():
         c.execute("INSERT INTO user_data(user_id) VALUES(?)", (user_id,))
 
-VERSION = "2.0.9"
+VERSION = "2.1.0"
 CHANGELOG = [
+    {
+        "version": "2.1.0",
+        "date": "2026-06-29",
+        "changes": [
+            "크로스 디바이스 동기화 수정: 서비스 워커를 HTML 네트워크-우선으로 변경 (스마트폰 구버전 캐시 문제 해결)",
+            "iOS Safari 저장 누락 수정: pagehide + visibilitychange 이벤트 추가 (탭 닫기·앱 전환 시 저장 보장)",
+            "업데이트 내역 (버전 클릭) v2.0.6~v2.0.9 내용 추가",
+        ]
+    },
+    {
+        "version": "2.0.9",
+        "date": "2026-06-29",
+        "changes": [
+            "관리자 패널 전면 개편: 사용자 테이블(아이디·역할·생성일·자산수), 새 계정 생성, 행별 비밀번호 초기화·삭제",
+            "관리자 계정 ID/PW admin/admin으로 변경 (서버 시작 시 자동 갱신)",
+            "POST /api/users: 관리자 계정 생성 API 추가",
+            "GET /api/users: 사용자별 자산 수(asset_count) 포함 반환",
+        ]
+    },
+    {
+        "version": "2.0.8",
+        "date": "2026-06-29",
+        "changes": [
+            "saveAssets/savePortfolio 디바운스 제거 → async 즉시 서버 저장 (기기 간 데이터 동기화 강화)",
+            "afterLogin: localStorage 폴백 시 await 즉시 서버 재동기화",
+            "30초 주기 백그라운드 자동 동기화 추가 (setInterval)",
+        ]
+    },
+    {
+        "version": "2.0.7",
+        "date": "2026-06-29",
+        "changes": [
+            "SQLite 사용 시 기기 간 동기화 불가 경고 배너 표시 (/api/db-type 엔드포인트 추가)",
+            "Render PostgreSQL 설정 링크 포함",
+        ]
+    },
+    {
+        "version": "2.0.6",
+        "date": "2026-06-29",
+        "changes": [
+            "포트폴리오 탭에 DEFAULT_PORTFOLIO 종목 표시 버그 수정 (구버전 portfolio_v1 localStorage 키 fallback 제거)",
+            "addAsset/removeAsset 즉시 await 서버 저장 (디바운스 경쟁조건 제거)",
+            "api_me_data/api_save_assets/api_save_portfolio 에러 시 500 대신 빈 배열 반환",
+        ]
+    },
     {
         "version": "2.0.5",
         "date": "2026-06-29",

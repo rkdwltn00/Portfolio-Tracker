@@ -1,5 +1,5 @@
 /* Portfolio Tracker – Service Worker */
-const CACHE   = 'pt-v2.0.9';
+const CACHE   = 'pt-v2.1.0';
 const STATIC  = [
   '/',
   '/manifest.json',
@@ -24,8 +24,9 @@ self.addEventListener('activate', e => {
 });
 
 // Fetch 전략
-// - API 호출 (/api/*): Network-first (실시간 데이터 필수)
-// - 정적 자산 (/, manifest, icons): Cache-first
+// - API 호출 (/api/*): Network-only (실시간 데이터 필수)
+// - HTML 페이지 (/):   Network-first → Cache fallback (항상 최신 코드)
+// - 정적 자산 (icons, manifest): Cache-first → Network fallback
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
 
@@ -40,7 +41,23 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // 정적 자산: Cache-first → Network fallback
+  // HTML 메인 페이지: Network-first (캐시된 구버전 HTML 방지)
+  if (url.pathname === '/' || url.pathname.endsWith('.html')) {
+    e.respondWith(
+      fetch(e.request)
+        .then(res => {
+          if (res && res.status === 200) {
+            const clone = res.clone();
+            caches.open(CACHE).then(c => c.put(e.request, clone));
+          }
+          return res;
+        })
+        .catch(() => caches.match(e.request))  // 오프라인 시 캐시 fallback
+    );
+    return;
+  }
+
+  // 아이콘·manifest 등 정적 자산: Cache-first → Network fallback
   e.respondWith(
     caches.match(e.request).then(cached => {
       if (cached) return cached;

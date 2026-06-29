@@ -575,7 +575,7 @@ body { padding-bottom: env(safe-area-inset-bottom); }
     <span class="user-name" id="userNameDisplay"></span>
   </div>
   <button class="btn btn-ghost btn-sm" id="btnLogout">로그아웃</button>
-  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.0.9</button>
+  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.1.0</button>
   <button class="btn btn-icon btn-ghost" id="btnTheme" title="테마 전환">🌙</button>
 </header>
 
@@ -1139,16 +1139,21 @@ document.querySelectorAll('.top-tab-btn').forEach(btn => {
   });
 });
 
-// 페이지 닫기 전 keepalive fetch로 강제 저장 (async fetch는 브라우저가 취소함)
-window.addEventListener('beforeunload', () => {
+// 페이지 닫기·숨김 시 강제 저장
+// beforeunload: PC Chrome/Firefox / pagehide: iOS Safari / visibilitychange: 앱 전환·탭 이동
+function _emergencySave() {
   if (!authToken || !authUser) return;
   const hdrs = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` };
-  // localStorage 즉시 갱신
   localStorage.setItem(`assets_v1_${authUser}`,    JSON.stringify(assets));
   localStorage.setItem(`portfolio_v1_${authUser}`, JSON.stringify(portfolio));
   // keepalive: true → 페이지 언로드 후에도 브라우저가 요청 완료 보장
   fetch('/api/me/assets',    { method:'PUT', headers: hdrs, body: JSON.stringify({ assets }),    keepalive: true });
   fetch('/api/me/portfolio', { method:'PUT', headers: hdrs, body: JSON.stringify({ portfolio }), keepalive: true });
+}
+window.addEventListener('beforeunload', _emergencySave);
+window.addEventListener('pagehide',     _emergencySave);   // iOS Safari: 탭 닫기
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') _emergencySave();  // 앱 전환·화면 끄기
 });
 
 /* ════════════════════════════════════════
