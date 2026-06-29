@@ -258,8 +258,17 @@ def _save_user_field(c, user_id: int, field: str, value: str):
     except Exception:
         pass
 
-VERSION = "2.1.1"
+VERSION = "2.1.2"
 CHANGELOG = [
+    {
+        "version": "2.1.2",
+        "date": "2026-06-30",
+        "changes": [
+            "포트폴리오 종목 탭: 로그인 시 '내 자산' 종목으로만 초기화 (세션 중 검색 추가 기록 제거)",
+            "로그아웃·재로그인 시 검색창·검색결과·추가 버튼 초기화",
+            "JWT sub 클레임 문자열 변환 수정 (PyJWT 2.8+ InvalidSubjectError 해결 — 모든 저장 실패 근본 원인)",
+        ]
+    },
     {
         "version": "2.1.1",
         "date": "2026-06-29",

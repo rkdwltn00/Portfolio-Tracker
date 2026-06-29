@@ -575,7 +575,7 @@ body { padding-bottom: env(safe-area-inset-bottom); }
     <span class="user-name" id="userNameDisplay"></span>
   </div>
   <button class="btn btn-ghost btn-sm" id="btnLogout">로그아웃</button>
-  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.1.1</button>
+  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.1.2</button>
   <button class="btn btn-icon btn-ghost" id="btnTheme" title="테마 전환">🌙</button>
 </header>
 
@@ -919,6 +919,12 @@ document.getElementById('btnLogout').addEventListener('click', async () => {
   portfolio = []; assets = [];
   activeTicker = null;
   _cacheClear(); _assetPrices.clear();
+  // 검색창·결과 초기화
+  document.getElementById('tickerInput').value = '';
+  const _lo_sr = document.getElementById('searchResult');
+  _lo_sr.style.display = 'none'; _lo_sr.textContent = ''; _lo_sr.className = 'search-result';
+  document.getElementById('btnAdd').style.display = 'none';
+  searchCandidate = null;
   showAuth();
 });
 
@@ -981,24 +987,20 @@ async function afterLogin() {
     assets = [];
   }
 
-  // ── ② 포트폴리오 결정: 서버 → localStorage → 내 자산 기반 초기화 → 빈 상태
-  if (serverPortfolio && serverPortfolio.length > 0) {
-    portfolio = serverPortfolio;
-    localStorage.setItem(`portfolio_v1_${authUser}`, JSON.stringify(portfolio));
-  } else if (lsPortfolio && lsPortfolio.length > 0) {
-    portfolio = lsPortfolio;
-    if (serverLoadOk) await savePortfolio();
-  } else if (assets.length > 0) {
-    portfolio = assets.map(a => ({ ticker: a.ticker, name: a.name }));
-    if (serverLoadOk) await savePortfolio();
-  } else {
-    portfolio = [];
-  }
+  // ── ② 포트폴리오: 로그인 시 항상 '내 자산' 종목만으로 초기화
+  // 세션 중 검색으로 추가했던 종목은 재로그인 시 제거됨
+  portfolio = assets.map(a => ({ ticker: a.ticker, name: a.name }));
+  if (serverLoadOk) await savePortfolio();
+
+  // ── ③ 검색창·결과 초기화 (이전 세션 검색기록 제거)
+  document.getElementById('tickerInput').value = '';
+  const _srEl = document.getElementById('searchResult');
+  _srEl.style.display = 'none'; _srEl.textContent = ''; _srEl.className = 'search-result';
+  document.getElementById('btnAdd').style.display = 'none';
+  searchCandidate = null;
 
   renderChips();
   renderAssets();
-  // 자산에 있지만 portfolio에 없는 종목 병합 (수동 추가 분 유지)
-  syncAssetsToPortfolio();
   if (portfolio.length) selectTicker(portfolio[0].ticker);
   loadVersion();
   if (authRole === 'master') document.getElementById('btnAdmin').style.display = '';
