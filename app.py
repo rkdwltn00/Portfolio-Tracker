@@ -187,7 +187,7 @@ def _ensure_user_data(c, user_id: int):
     if not c.execute("SELECT 1 FROM user_data WHERE user_id=?", (user_id,)).fetchone():
         c.execute("INSERT INTO user_data(user_id) VALUES(?)", (user_id,))
 
-VERSION = "2.0.5"
+VERSION = "2.0.6"
 CHANGELOG = [
     {
         "version": "2.0.5",
@@ -764,14 +764,20 @@ def api_reset_password(uid):
 @app.route("/api/me/data")
 @require_auth
 def api_me_data():
-    with _db() as c:
-        _ensure_user_data(c, g.uid)
-        c.commit()
-        row = c.execute("SELECT portfolio,assets FROM user_data WHERE user_id=?", (g.uid,)).fetchone()
-    return jsonify({
-        "portfolio": json.loads(row["portfolio"]),
-        "assets":    json.loads(row["assets"]),
-    })
+    try:
+        with _db() as c:
+            _ensure_user_data(c, g.uid)
+            c.commit()
+            row = c.execute("SELECT portfolio,assets FROM user_data WHERE user_id=?", (g.uid,)).fetchone()
+        if not row:
+            return jsonify({"portfolio": [], "assets": []})
+        return jsonify({
+            "portfolio": json.loads(row["portfolio"] or "[]"),
+            "assets":    json.loads(row["assets"]    or "[]"),
+        })
+    except Exception as e:
+        app.logger.error(f"api_me_data uid={g.uid}: {e}")
+        return jsonify({"portfolio": [], "assets": []})
 
 # ── 포트폴리오 저장 ───────────────────────────────────────────────────────────
 @app.route("/api/me/portfolio", methods=["PUT"])
@@ -779,14 +785,18 @@ def api_me_data():
 def api_save_portfolio():
     data = request.json or {}
     portfolio = data.get("portfolio", [])
-    with _db() as c:
-        _ensure_user_data(c, g.uid)
-        c.execute("""INSERT INTO user_data(user_id,portfolio) VALUES(?,?)
-                     ON CONFLICT(user_id) DO UPDATE SET portfolio=excluded.portfolio,
-                     updated=datetime('now')""",
-                  (g.uid, json.dumps(portfolio, ensure_ascii=False)))
-        c.commit()
-    return jsonify({"ok": True})
+    try:
+        with _db() as c:
+            _ensure_user_data(c, g.uid)
+            c.execute("""INSERT INTO user_data(user_id,portfolio) VALUES(?,?)
+                         ON CONFLICT(user_id) DO UPDATE SET portfolio=excluded.portfolio,
+                         updated=datetime('now')""",
+                      (g.uid, json.dumps(portfolio, ensure_ascii=False)))
+            c.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        app.logger.error(f"api_save_portfolio uid={g.uid}: {e}")
+        return jsonify({"error": str(e), "ok": False}), 500
 
 # ── 자산 저장 ─────────────────────────────────────────────────────────────────
 @app.route("/api/me/assets", methods=["PUT"])
@@ -794,14 +804,18 @@ def api_save_portfolio():
 def api_save_assets():
     data = request.json or {}
     assets = data.get("assets", [])
-    with _db() as c:
-        _ensure_user_data(c, g.uid)
-        c.execute("""INSERT INTO user_data(user_id,assets) VALUES(?,?)
-                     ON CONFLICT(user_id) DO UPDATE SET assets=excluded.assets,
-                     updated=datetime('now')""",
-                  (g.uid, json.dumps(assets, ensure_ascii=False)))
-        c.commit()
-    return jsonify({"ok": True})
+    try:
+        with _db() as c:
+            _ensure_user_data(c, g.uid)
+            c.execute("""INSERT INTO user_data(user_id,assets) VALUES(?,?)
+                         ON CONFLICT(user_id) DO UPDATE SET assets=excluded.assets,
+                         updated=datetime('now')""",
+                      (g.uid, json.dumps(assets, ensure_ascii=False)))
+            c.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        app.logger.error(f"api_save_assets uid={g.uid}: {e}")
+        return jsonify({"error": str(e), "ok": False}), 500
 
 # ── USD/KRW 환율 ──────────────────────────────────────────────────────────────
 @app.route("/api/exchange-rate")

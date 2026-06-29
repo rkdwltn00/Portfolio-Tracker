@@ -536,7 +536,7 @@ body { padding-bottom: env(safe-area-inset-bottom); }
     <span class="user-name" id="userNameDisplay"></span>
   </div>
   <button class="btn btn-ghost btn-sm" id="btnLogout">로그아웃</button>
-  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.0.5</button>
+  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.0.6</button>
   <button class="btn btn-icon btn-ghost" id="btnTheme" title="테마 전환">🌙</button>
 </header>
 
@@ -872,7 +872,10 @@ async function afterLogin() {
   // ── localStorage 백업 읽기 (항상 먼저, 파싱 실패 시 null)
   const _lsParse = key => { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } };
   const lsAssets    = _lsParse(`assets_v1_${authUser}`);
-  const lsPortfolio = _lsParse(`portfolio_v1_${authUser}`) || _lsParse('portfolio_v1');
+  // 구버전 generic 키(portfolio_v1)는 사용하지 않음 — DEFAULT_PORTFOLIO 데이터가 남아있을 수 있음
+  const lsPortfolio = _lsParse(`portfolio_v1_${authUser}`);
+  // 구버전 키 정리
+  localStorage.removeItem('portfolio_v1');
 
   // ── 서버 데이터 로드 (실패해도 localStorage로 폴백)
   let serverAssets = null, serverPortfolio = null;
@@ -1094,7 +1097,17 @@ async function addAsset() {
   } catch {}
 
   assets.push({ ticker, name, shares, avgCost });
-  saveAssets();
+
+  // localStorage 즉시 저장 (동기)
+  if (authUser) localStorage.setItem(_assetsLsKey(), JSON.stringify(assets));
+  // 서버 즉시 저장 (await — 디바운스 없이 바로 확정)
+  if (authToken && authUser) {
+    try {
+      const r = await apiFetch('/api/me/assets', { method: 'PUT', body: JSON.stringify({ assets }) });
+      if (!r.ok) console.warn('[PT] addAsset 서버 저장 실패:', r.status);
+    } catch (e) { console.warn('[PT] addAsset 서버 저장 오류:', e); }
+  }
+
   syncAssetsToPortfolio();   // 포트폴리오 칩에도 즉시 반영
   document.getElementById('assetTicker').value = '';
   document.getElementById('assetShares').value = '';
@@ -1104,12 +1117,18 @@ async function addAsset() {
   refreshAssetPrices();
 }
 
-function removeAsset(ticker) {
+async function removeAsset(ticker) {
   assets = assets.filter(a => a.ticker !== ticker);
   _assetPrices.delete(ticker);
-  saveAssets();
+  // localStorage 즉시 저장
+  if (authUser) localStorage.setItem(_assetsLsKey(), JSON.stringify(assets));
+  // 서버 즉시 저장 (await)
+  if (authToken && authUser) {
+    try {
+      await apiFetch('/api/me/assets', { method: 'PUT', body: JSON.stringify({ assets }) });
+    } catch (e) { console.warn('[PT] removeAsset 서버 저장 오류:', e); }
+  }
   renderAssets();
-  // 투자성과 탭도 갱신
   if (activeTicker === ticker) renderPerformance(ticker);
 }
 
