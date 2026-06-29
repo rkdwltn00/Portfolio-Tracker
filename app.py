@@ -216,8 +216,11 @@ def require_auth(f):
             g.role     = payload["role"]
         except pyjwt.ExpiredSignatureError:
             return jsonify({"error": "세션이 만료됐습니다. 다시 로그인하세요."}), 401
-        except Exception:
-            return jsonify({"error": "유효하지 않은 토큰입니다."}), 401
+        except Exception as e:
+            # 예외 타입·내용을 포함해 반환 → 클라이언트 UI에서 원인 파악 가능
+            err_detail = f"{type(e).__name__}: {e}"
+            app.logger.error(f"[require_auth] JWT 검증 실패 — {err_detail} | token_len={len(token)} | first20={token[:20]!r}")
+            return jsonify({"error": f"유효하지 않은 토큰입니다. ({err_detail})"}), 401
         return f(*args, **kwargs)
     return wrapper
 

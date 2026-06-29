@@ -815,9 +815,26 @@ const _assetPrices = new Map();  // ticker -> {price, currency}
 /* ════════════════════════════════════════
    API helper (auth header)
 ════════════════════════════════════════ */
+function _isValidJwt(t) {
+  // JWT = 3개 base64 세그먼트를 점(.)으로 구분
+  if (!t || typeof t !== 'string') return false;
+  const parts = t.split('.');
+  return parts.length === 3 && parts.every(p => p.length > 0);
+}
+
 function apiFetch(url, opts = {}) {
   opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
-  if (authToken) opts.headers['Authorization'] = `Bearer ${authToken}`;
+  if (authToken) {
+    if (!_isValidJwt(authToken)) {
+      // localStorage 에 손상된 토큰이 있으면 즉시 제거하고 재로그인 유도
+      console.warn('[PT] authToken이 올바른 JWT 형식이 아님 — 토큰 초기화:', JSON.stringify(authToken).slice(0, 60));
+      authToken = '';
+      localStorage.removeItem('pt_token');
+      showAuth();
+      return Promise.reject(new Error('invalid_token_format'));
+    }
+    opts.headers['Authorization'] = `Bearer ${authToken}`;
+  }
   return fetch(url, opts);
 }
 
