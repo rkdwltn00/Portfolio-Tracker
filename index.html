@@ -575,7 +575,7 @@ body { padding-bottom: env(safe-area-inset-bottom); }
     <span class="user-name" id="userNameDisplay"></span>
   </div>
   <button class="btn btn-ghost btn-sm" id="btnLogout">로그아웃</button>
-  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.1.0</button>
+  <button class="btn btn-ghost btn-sm" id="btnVersion">v2.1.1</button>
   <button class="btn btn-icon btn-ghost" id="btnTheme" title="테마 전환">🌙</button>
 </header>
 
@@ -619,6 +619,9 @@ body { padding-bottom: env(safe-area-inset-bottom); }
         <button class="btn btn-primary" id="btnAddAsset" style="align-self:flex-end">+ 추가</button>
       </div>
       <div class="auth-err" id="assetErr" style="margin-top:10px;margin-bottom:0"></div>
+      <div style="margin-top:8px">
+        <span id="syncStatus" style="display:none;font-size:12px"></span>
+      </div>
     </div>
 
     <!-- 요약 -->
@@ -914,24 +917,47 @@ async function afterLogin() {
   // 구버전 키 정리
   localStorage.removeItem('portfolio_v1');
 
+  // ── DB 헬스체크 (서버 연결 가능 여부 선제 확인)
+  let dbOk = false;
+  try {
+    const hr = await fetch('/api/health');
+    dbOk = hr.ok && (await hr.json()).ok === true;
+  } catch {}
+
   // ── 서버 데이터 로드 (실패해도 localStorage로 폴백)
-  let serverAssets = null, serverPortfolio = null;
+  let serverAssets = null, serverPortfolio = null, serverLoadOk = false;
   try {
     const r = await apiFetch('/api/me/data');
     if (r.ok) {
       const d = await r.json();
       serverAssets    = Array.isArray(d.assets)    ? d.assets    : null;
       serverPortfolio = Array.isArray(d.portfolio) ? d.portfolio : null;
+      serverLoadOk = true;
     }
   } catch {}
 
+  // DB 연결 실패 배너
+  if (!dbOk) {
+    const el = document.getElementById('syncStatus');
+    if (el) {
+      el.innerHTML = '⚠️ 서버 DB 연결 실패 — 데이터가 이 기기에만 저장됩니다';
+      el.style.cssText = 'color:#e74c3c;font-size:12px;display:inline-block';
+    }
+  }
+
   // ── ① 자산 먼저 결정 (portfolio 초기화에 필요)
   if (serverAssets && serverAssets.length > 0) {
+    // 서버 데이터 우선
     assets = serverAssets;
     localStorage.setItem(_assetsLsKey(), JSON.stringify(assets));
   } else if (lsAssets && lsAssets.length > 0) {
+    // 서버 비었거나 실패 → localStorage 복원 + 서버 재동기화 시도
     assets = lsAssets;
-    await saveAssets();   // 서버가 비었으면(재시작 등) localStorage 데이터를 즉시 재동기화
+    if (serverLoadOk) {
+      // 서버에 연결은 됐지만 데이터가 없음 → 즉시 업로드
+      await saveAssets();
+    }
+    // 서버 연결 실패 시엔 saveAssets()가 어차피 실패하므로 호출 안함
   } else {
     assets = [];
   }
@@ -942,10 +968,10 @@ async function afterLogin() {
     localStorage.setItem(`portfolio_v1_${authUser}`, JSON.stringify(portfolio));
   } else if (lsPortfolio && lsPortfolio.length > 0) {
     portfolio = lsPortfolio;
-    await savePortfolio();
+    if (serverLoadOk) await savePortfolio();
   } else if (assets.length > 0) {
     portfolio = assets.map(a => ({ ticker: a.ticker, name: a.name }));
-    await savePortfolio();
+    if (serverLoadOk) await savePortfolio();
   } else {
     portfolio = [];
   }
@@ -1161,14 +1187,33 @@ document.addEventListener('visibilitychange', () => {
 ════════════════════════════════════════ */
 function _assetsLsKey() { return `assets_v1_${authUser}`; }
 
+/* ── 서버 저장 상태 UI 피드백 ────────────────────────────────────────────── */
+let _syncFail = false;  // 서버 저장 실패 상태 추적
+
+function _setSyncStatus(ok, msg) {
+  const el = document.getElementById('syncStatus');
+  if (!el) return;
+  _syncFail = !ok;
+  if (ok) {
+    el.textContent = '✓ 서버에 저장됨';
+    el.style.cssText = 'color:#27ae60;font-size:12px;display:inline-block';
+    setTimeout(() => { el.style.display = 'none'; }, 3000);
+  } else {
+    el.innerHTML = `⚠️ 서버 저장 실패 <span style="font-size:11px;opacity:.8">(이 기기에만 저장됨)</span>`;
+    el.style.cssText = 'color:#e74c3c;font-size:12px;display:inline-block;cursor:pointer';
+    el.title = msg || '서버 연결을 확인하세요.';
+  }
+}
+
 /* 자산 저장 — localStorage 즉시 + 서버 즉시(await) */
 async function saveAssets() {
   if (authUser) localStorage.setItem(_assetsLsKey(), JSON.stringify(assets));
   if (!authToken || !authUser) return;
   try {
     const r = await apiFetch('/api/me/assets', { method: 'PUT', body: JSON.stringify({ assets }) });
-    if (!r.ok) console.warn('[PT] assets 서버 저장 실패:', r.status);
-  } catch (e) { console.warn('[PT] assets 서버 저장 오류:', e); }
+    if (r.ok) { _setSyncStatus(true); }
+    else { _setSyncStatus(false, `HTTP ${r.status}`); }
+  } catch (e) { _setSyncStatus(false, String(e)); }
 }
 
 /* 내 자산에 등록된 종목을 포트폴리오 칩에 자동 동기화 */
@@ -1218,8 +1263,9 @@ async function addAsset() {
   if (authToken && authUser) {
     try {
       const r = await apiFetch('/api/me/assets', { method: 'PUT', body: JSON.stringify({ assets }) });
-      if (!r.ok) console.warn('[PT] addAsset 서버 저장 실패:', r.status);
-    } catch (e) { console.warn('[PT] addAsset 서버 저장 오류:', e); }
+      if (r.ok) { _setSyncStatus(true); }
+      else { _setSyncStatus(false, `HTTP ${r.status}`); }
+    } catch (e) { _setSyncStatus(false, String(e)); }
   }
 
   syncAssetsToPortfolio();   // 포트폴리오 칩에도 즉시 반영
@@ -1239,8 +1285,10 @@ async function removeAsset(ticker) {
   // 서버 즉시 저장 (await)
   if (authToken && authUser) {
     try {
-      await apiFetch('/api/me/assets', { method: 'PUT', body: JSON.stringify({ assets }) });
-    } catch (e) { console.warn('[PT] removeAsset 서버 저장 오류:', e); }
+      const r = await apiFetch('/api/me/assets', { method: 'PUT', body: JSON.stringify({ assets }) });
+      if (r.ok) { _setSyncStatus(true); }
+      else { _setSyncStatus(false, `HTTP ${r.status}`); }
+    } catch (e) { _setSyncStatus(false, String(e)); }
   }
   renderAssets();
   if (activeTicker === ticker) renderPerformance(ticker);

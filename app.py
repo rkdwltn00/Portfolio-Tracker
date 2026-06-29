@@ -57,7 +57,11 @@ class _DBConn:
     """
     def __init__(self):
         if _USE_PG:
-            self._conn = psycopg2.connect(DATABASE_URL)
+            # Render 등에서 'postgres://' 접두사를 제공하는 경우 psycopg2 호환 형식으로 변환
+            db_url = DATABASE_URL
+            if db_url.startswith("postgres://"):
+                db_url = "postgresql://" + db_url[len("postgres://"):]
+            self._conn = psycopg2.connect(db_url)
             self._pg   = True
         else:
             self._conn = sqlite3.connect(DB_PATH)
@@ -192,8 +196,27 @@ def _ensure_user_data(c, user_id: int):
     if not c.execute("SELECT 1 FROM user_data WHERE user_id=?", (user_id,)).fetchone():
         c.execute("INSERT INTO user_data(user_id) VALUES(?)", (user_id,))
 
-VERSION = "2.1.0"
+def _save_user_field(c, user_id: int, field: str, value: str):
+    """row 보장 후 단순 UPDATE — ON CONFLICT 방식보다 PostgreSQL 호환성이 높음"""
+    _ensure_user_data(c, user_id)
+    c.execute(
+        f"UPDATE user_data SET {field}=?, updated=datetime('now') WHERE user_id=?",
+        (value, user_id)
+    )
+
+VERSION = "2.1.1"
 CHANGELOG = [
+    {
+        "version": "2.1.1",
+        "date": "2026-06-29",
+        "changes": [
+            "크로스 디바이스 동기화 근본 수정: postgres:// URL 자동 변환, ON CONFLICT UPSERT → _ensure+UPDATE 방식으로 변경",
+            "/api/health 엔드포인트 추가: DB 연결·쿼리 실제 검증",
+            "서버 저장 실패 시 UI 상태 배지 표시 (✓ 서버에 저장됨 / ⚠️ 서버 저장 실패)",
+            "afterLogin: DB 헬스체크 후 실패 시 즉시 경고 배너 표시",
+            "afterLogin: 서버 연결 성공 + 서버 데이터 없음일 때만 localStorage→서버 재업로드 (연결 실패 시 불필요한 호출 제거)",
+        ]
+    },
     {
         "version": "2.1.0",
         "date": "2026-06-29",
@@ -736,6 +759,19 @@ def api_version():
 def api_db_type():
     return jsonify({"type": "postgresql" if _USE_PG else "sqlite"})
 
+@app.route("/api/health")
+def api_health():
+    """DB 연결·읽기·쓰기를 실제로 검증하는 헬스체크"""
+    try:
+        with _db() as c:
+            # 실제 쿼리로 연결 확인
+            c.execute("SELECT COUNT(*) FROM users")
+            c.commit()
+        return jsonify({"ok": True, "db": "postgresql" if _USE_PG else "sqlite"})
+    except Exception as e:
+        app.logger.error(f"health check failed: {e}")
+        return jsonify({"ok": False, "error": str(e), "db": "postgresql" if _USE_PG else "sqlite"}), 503
+
 # ── 회원가입 ──────────────────────────────────────────────────────────────────
 @app.route("/api/auth/register", methods=["POST"])
 def api_register():
@@ -881,11 +917,7 @@ def api_save_portfolio():
     portfolio = data.get("portfolio", [])
     try:
         with _db() as c:
-            _ensure_user_data(c, g.uid)
-            c.execute("""INSERT INTO user_data(user_id,portfolio) VALUES(?,?)
-                         ON CONFLICT(user_id) DO UPDATE SET portfolio=excluded.portfolio,
-                         updated=datetime('now')""",
-                      (g.uid, json.dumps(portfolio, ensure_ascii=False)))
+            _save_user_field(c, g.uid, "portfolio", json.dumps(portfolio, ensure_ascii=False))
             c.commit()
         return jsonify({"ok": True})
     except Exception as e:
@@ -900,11 +932,7 @@ def api_save_assets():
     assets = data.get("assets", [])
     try:
         with _db() as c:
-            _ensure_user_data(c, g.uid)
-            c.execute("""INSERT INTO user_data(user_id,assets) VALUES(?,?)
-                         ON CONFLICT(user_id) DO UPDATE SET assets=excluded.assets,
-                         updated=datetime('now')""",
-                      (g.uid, json.dumps(assets, ensure_ascii=False)))
+            _save_user_field(c, g.uid, "assets", json.dumps(assets, ensure_ascii=False))
             c.commit()
         return jsonify({"ok": True})
     except Exception as e:
