@@ -153,6 +153,37 @@ def _init_db():
         """
     with _db() as c:
         c.executescript(ddl)
+        # ── 스키마 마이그레이션: 기존 테이블에 누락된 컬럼 추가 ──────────────
+        # CREATE TABLE IF NOT EXISTS 는 기존 테이블 컬럼을 추가하지 않으므로
+        # ALTER TABLE 로 명시적으로 보장
+        if _USE_PG:
+            migrations = [
+                "ALTER TABLE users     ADD COLUMN IF NOT EXISTS role    TEXT NOT NULL DEFAULT 'user'",
+                "ALTER TABLE users     ADD COLUMN IF NOT EXISTS created TIMESTAMP DEFAULT NOW()",
+                "ALTER TABLE user_data ADD COLUMN IF NOT EXISTS portfolio TEXT DEFAULT '[]'",
+                "ALTER TABLE user_data ADD COLUMN IF NOT EXISTS assets    TEXT DEFAULT '[]'",
+                "ALTER TABLE user_data ADD COLUMN IF NOT EXISTS updated   TIMESTAMP DEFAULT NOW()",
+            ]
+            for mig in migrations:
+                try:
+                    c.execute(mig)
+                except Exception as me:
+                    app.logger.warning(f"[migration] {mig[:60]}... => {me}")
+        else:
+            # SQLite 는 ADD COLUMN 을 지원하지만 IF NOT EXISTS 미지원 → 예외 무시
+            sqlite_migs = [
+                "ALTER TABLE users     ADD COLUMN role    TEXT NOT NULL DEFAULT 'user'",
+                "ALTER TABLE users     ADD COLUMN created TEXT DEFAULT (datetime('now'))",
+                "ALTER TABLE user_data ADD COLUMN portfolio TEXT DEFAULT '[]'",
+                "ALTER TABLE user_data ADD COLUMN assets    TEXT DEFAULT '[]'",
+                "ALTER TABLE user_data ADD COLUMN updated   TEXT DEFAULT (datetime('now'))",
+            ]
+            for mig in sqlite_migs:
+                try:
+                    c.execute(mig)
+                except Exception:
+                    pass  # 이미 존재하면 무시
+
         existing = c.execute("SELECT id FROM users WHERE username=?", (MASTER_USER,)).fetchone()
         if not existing:
             c.execute("INSERT INTO users(username,pw_hash,role) VALUES(?,?,?)",
@@ -205,12 +236,24 @@ def _ensure_user_data(c, user_id: int):
         c.execute("INSERT INTO user_data(user_id) VALUES(?)", (user_id,))
 
 def _save_user_field(c, user_id: int, field: str, value: str):
-    """row 보장 후 단순 UPDATE — ON CONFLICT 방식보다 PostgreSQL 호환성이 높음"""
+    """row 보장 후 단순 UPDATE.
+    updated 컬럼은 마이그레이션 후 존재가 보장되지만, 혹시 없어도 저장 자체는 성공하도록
+    데이터 컬럼만 UPDATE 한 뒤 updated 는 별도 시도.
+    """
     _ensure_user_data(c, user_id)
+    # 핵심 데이터 저장 (updated 컬럼 제외 — 컬럼 유무와 무관하게 항상 성공)
     c.execute(
-        f"UPDATE user_data SET {field}=?, updated=datetime('now') WHERE user_id=?",
+        f"UPDATE user_data SET {field}=? WHERE user_id=?",
         (value, user_id)
     )
+    # updated 타임스탬프 갱신 (컬럼이 없는 구버전 스키마에서는 조용히 무시)
+    try:
+        c.execute(
+            "UPDATE user_data SET updated=datetime('now') WHERE user_id=?",
+            (user_id,)
+        )
+    except Exception:
+        pass
 
 VERSION = "2.1.1"
 CHANGELOG = [

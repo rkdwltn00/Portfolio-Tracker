@@ -1199,11 +1199,21 @@ function _setSyncStatus(ok, msg) {
   if (ok) {
     el.textContent = '✓ 서버에 저장됨';
     el.style.cssText = 'color:#27ae60;font-size:12px;display:inline-block';
-    setTimeout(() => { el.style.display = 'none'; }, 3000);
+    setTimeout(() => { if (!_syncFail) el.style.display = 'none'; }, 3000);
   } else {
-    el.innerHTML = `⚠️ 서버 저장 실패 <span style="font-size:11px;opacity:.8">(이 기기에만 저장됨)</span>`;
-    el.style.cssText = 'color:#e74c3c;font-size:12px;display:inline-block;cursor:pointer';
-    el.title = msg || '서버 연결을 확인하세요.';
+    const detail = msg ? ` — ${msg}` : '';
+    el.innerHTML = `⚠️ 서버 저장 실패<span style="font-size:11px;opacity:.85">${detail}</span>`;
+    el.style.cssText = 'color:#e74c3c;font-size:12px;display:inline-block;word-break:break-all';
+  }
+}
+
+/* 응답 에러 본문 읽기 헬퍼 */
+async function _readErrBody(r) {
+  try {
+    const d = await r.json();
+    return `HTTP ${r.status}: ${d.error || JSON.stringify(d)}`;
+  } catch {
+    return `HTTP ${r.status}`;
   }
 }
 
@@ -1214,7 +1224,7 @@ async function saveAssets() {
   try {
     const r = await apiFetch('/api/me/assets', { method: 'PUT', body: JSON.stringify({ assets }) });
     if (r.ok) { _setSyncStatus(true); }
-    else { _setSyncStatus(false, `HTTP ${r.status}`); }
+    else { _setSyncStatus(false, await _readErrBody(r)); }
   } catch (e) { _setSyncStatus(false, String(e)); }
 }
 
@@ -1266,7 +1276,7 @@ async function addAsset() {
     try {
       const r = await apiFetch('/api/me/assets', { method: 'PUT', body: JSON.stringify({ assets }) });
       if (r.ok) { _setSyncStatus(true); }
-      else { _setSyncStatus(false, `HTTP ${r.status}`); }
+      else { _setSyncStatus(false, await _readErrBody(r)); }
     } catch (e) { _setSyncStatus(false, String(e)); }
   }
 
@@ -1289,7 +1299,7 @@ async function removeAsset(ticker) {
     try {
       const r = await apiFetch('/api/me/assets', { method: 'PUT', body: JSON.stringify({ assets }) });
       if (r.ok) { _setSyncStatus(true); }
-      else { _setSyncStatus(false, `HTTP ${r.status}`); }
+      else { _setSyncStatus(false, await _readErrBody(r)); }
     } catch (e) { _setSyncStatus(false, String(e)); }
   }
   renderAssets();
