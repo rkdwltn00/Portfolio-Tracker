@@ -57,11 +57,19 @@ class _DBConn:
     """
     def __init__(self):
         if _USE_PG:
-            # Render 등에서 'postgres://' 접두사를 제공하는 경우 psycopg2 호환 형식으로 변환
+            # postgres:// → postgresql:// 변환 (psycopg2 호환)
             db_url = DATABASE_URL
             if db_url.startswith("postgres://"):
                 db_url = "postgresql://" + db_url[len("postgres://"):]
-            self._conn = psycopg2.connect(db_url)
+            # External URL 자동 감지: .render.com 호스트는 SSL 필수
+            if ".render.com" in db_url and "sslmode" not in db_url:
+                sep = "&" if "?" in db_url else "?"
+                db_url = db_url + sep + "sslmode=require"
+            try:
+                self._conn = psycopg2.connect(db_url)
+            except Exception as e:
+                app.logger.error(f"[DB] 연결 실패 (url 마스킹): {e}")
+                raise
             self._pg   = True
         else:
             self._conn = sqlite3.connect(DB_PATH)
@@ -761,16 +769,17 @@ def api_db_type():
 
 @app.route("/api/health")
 def api_health():
-    """DB 연결·읽기·쓰기를 실제로 검증하는 헬스체크"""
+    """DB 연결·읽기를 실제로 검증하는 헬스체크 — 에러 메시지 포함 반환"""
+    db_type = "postgresql" if _USE_PG else "sqlite"
     try:
         with _db() as c:
-            # 실제 쿼리로 연결 확인
             c.execute("SELECT COUNT(*) FROM users")
             c.commit()
-        return jsonify({"ok": True, "db": "postgresql" if _USE_PG else "sqlite"})
+        return jsonify({"ok": True, "db": db_type})
     except Exception as e:
-        app.logger.error(f"health check failed: {e}")
-        return jsonify({"ok": False, "error": str(e), "db": "postgresql" if _USE_PG else "sqlite"}), 503
+        err_msg = str(e)
+        app.logger.error(f"[health] DB 연결 실패: {err_msg}")
+        return jsonify({"ok": False, "db": db_type, "error": err_msg}), 503
 
 # ── 회원가입 ──────────────────────────────────────────────────────────────────
 @app.route("/api/auth/register", methods=["POST"])

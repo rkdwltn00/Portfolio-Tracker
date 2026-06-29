@@ -918,11 +918,13 @@ async function afterLogin() {
   localStorage.removeItem('portfolio_v1');
 
   // ── DB 헬스체크 (서버 연결 가능 여부 선제 확인)
-  let dbOk = false;
+  let dbOk = false, dbError = '';
   try {
     const hr = await fetch('/api/health');
-    dbOk = hr.ok && (await hr.json()).ok === true;
-  } catch {}
+    const hd = await hr.json();
+    dbOk = hd.ok === true;
+    if (!dbOk) dbError = hd.error || '알 수 없는 오류';
+  } catch (e) { dbError = String(e); }
 
   // ── 서버 데이터 로드 (실패해도 localStorage로 폴백)
   let serverAssets = null, serverPortfolio = null, serverLoadOk = false;
@@ -936,12 +938,12 @@ async function afterLogin() {
     }
   } catch {}
 
-  // DB 연결 실패 배너
+  // DB 연결 실패 배너 — 실제 에러 메시지 표시
   if (!dbOk) {
     const el = document.getElementById('syncStatus');
     if (el) {
-      el.innerHTML = '⚠️ 서버 DB 연결 실패 — 데이터가 이 기기에만 저장됩니다';
-      el.style.cssText = 'color:#e74c3c;font-size:12px;display:inline-block';
+      el.innerHTML = `⚠️ 서버 DB 연결 실패: <span style="font-size:11px">${dbError}</span>`;
+      el.style.cssText = 'color:#e74c3c;font-size:12px;display:inline-block;word-break:break-all';
     }
   }
 
