@@ -258,8 +258,18 @@ def _save_user_field(c, user_id: int, field: str, value: str):
     except Exception:
         pass
 
-VERSION = "2.1.8"
+VERSION = "2.1.9"
 CHANGELOG = [
+    {
+        "version": "2.1.9",
+        "date": "2026-06-30",
+        "changes": [
+            "뉴스 탭: 기사 관련성 자동 판별 추가 (직접 관련 / 간접 언급 / 섹터 뉴스)",
+            "뉴스 탭: 티커 기호·회사명 제목 포함 여부 + relatedTickers 순위로 관련성 3단계 분류",
+            "뉴스 탭: '섹터 뉴스'는 주황 배지 + 안내 문구, '간접 언급'은 회색 배지로 표시",
+            "뉴스 정렬: 직접 관련 뉴스 우선 → 간접 → 섹터 순으로 정렬 개선",
+        ]
+    },
     {
         "version": "2.1.8",
         "date": "2026-06-30",
@@ -769,10 +779,19 @@ def _parse_news_item(item: dict) -> dict | None:
     summary = n.get("summary", "") or n.get("description", "")
     summary = _PAT["html_tag"].sub('', summary)[:300]
 
+    # relatedTickers: 새 포맷(객체 목록) / 구 포맷(문자열 목록) 모두 처리
+    raw_related = n.get("relatedTickers") or item.get("relatedTickers") or []
+    related_tickers: list[str] = []
+    for rt in raw_related:
+        sym = rt.get("symbol", "") if isinstance(rt, dict) else str(rt)
+        if sym:
+            related_tickers.append(sym.upper())
+
     return {
         "title": title, "publisher": publisher, "link": link,
         "pub_dt": pub_dt, "thumbnail": thumb, "summary": summary,
         "tier": _source_tier(publisher),
+        "related_tickers": related_tickers,
     }
 
 def _rss_pub_dt(date_str: str) -> datetime:
@@ -781,6 +800,51 @@ def _rss_pub_dt(date_str: str) -> datetime:
         return _parse_rfc2822(date_str).replace(tzinfo=None)
     except Exception:
         return datetime.min
+
+
+_CORP_SUFFIX = re.compile(
+    r'\b(inc|corp|ltd|plc|llc|co|holdings?|technologies|technology|systems|group|labs?)\b\.?',
+    re.I
+)
+
+def _news_relevance(title: str, ticker: str, company_name: str,
+                    related_tickers: list[str]) -> str:
+    """
+    Returns: 'direct' | 'indirect' | 'sector'
+    direct  — article is primarily about this ticker/company
+    indirect — ticker mentioned but article may focus on another company
+    sector  — sector/market news, this company is peripheral
+    """
+    title_l = title.lower()
+    ticker_u = ticker.upper()
+
+    # ① 제목에 티커 기호가 단어 경계로 등장 (2자 이상만)
+    if len(ticker) >= 2:
+        if re.search(r'(?<![a-z])' + re.escape(ticker.lower()) + r'(?![a-z])', title_l):
+            return 'direct'
+
+    # ② 제목에 회사명 핵심 키워드 등장
+    if company_name:
+        clean = _CORP_SUFFIX.sub(' ', company_name.lower()).strip()
+        # 4자 이상 토큰만, 단 3자여도 모두 대문자(약어)면 허용
+        name_tokens = [
+            p for p in clean.split()
+            if (len(p) >= 4) or (len(p) == 3 and p.isupper())
+        ]
+        if name_tokens and any(tok in title_l for tok in name_tokens[:3]):
+            return 'direct'
+
+    # ③ relatedTickers 순위
+    if related_tickers:
+        rt = [t.upper() for t in related_tickers]
+        if rt[0] == ticker_u:          # 첫 번째 → 주요 종목
+            return 'direct'
+        if ticker_u in rt:             # 리스트엔 있으나 주요 종목 아님
+            return 'indirect'
+        return 'sector'                # 리스트에 없으면 섹터 뉴스
+
+    # ④ relatedTickers 없음 → yfinance/RSS 피드가 걸러준 것 → 간접 관련
+    return 'indirect'
 
 
 def _fetch_rss(url: str, days: int, default_pub: str = "") -> list[dict]:
@@ -1281,8 +1345,18 @@ def api_news():
         if not filtered:
             filtered = yf_scored[:5]   # 모든 소스 실패 시 yfinance 원본 사용
 
-    # ── 중요도↓ · 티어↑ · 날짜↓ 정렬 → 상위 5개 ────────────────────────────
+    # ── 관련성 판별 ──────────────────────────────────────────────────────────
+    price_c      = _cache.get(f"price:{ticker}")
+    company_name = (price_c or {}).get("name", "")
+    for p in filtered:
+        p["relevance"] = _news_relevance(
+            p["title"], ticker, company_name, p.get("related_tickers", [])
+        )
+
+    # ── 중요도↓ · 관련성↑ · 티어↑ · 날짜↓ 정렬 → 상위 5개 ──────────────────
+    _rel_order = {"direct": 0, "indirect": 1, "sector": 2}
     filtered.sort(key=lambda x: (
+        _rel_order.get(x.get("relevance", "indirect"), 1),
         -x["stars"], x["tier"],
         -(x["pub_dt"].timestamp() if x["pub_dt"] != datetime.min else 0)
     ))
@@ -1306,6 +1380,7 @@ def api_news():
         "summary":        summaries_ko[i],
         "stars":          p["stars"],
         "star_reasons":   p["star_reasons"],
+        "relevance":      p.get("relevance", "indirect"),
     } for i, p in enumerate(top)]
 
     # 1m·6m 는 캐시 TTL 단축 (외부 API 결과는 시간이 지나면 바뀜)

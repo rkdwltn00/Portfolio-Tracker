@@ -308,6 +308,10 @@ body { padding-bottom: env(safe-area-inset-bottom); }
 .star-score { font-size: 12px; font-weight: 700; color: var(--text2); }
 .star-reasons { display: flex; gap: 4px; flex-wrap: wrap; }
 .star-tag { padding: 2px 7px; border-radius: 99px; font-size: 11px; font-weight: 600; border: 1px solid var(--border); background: var(--surface2); color: var(--text2); }
+.rel-badge { display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 99px; font-size: 11px; font-weight: 700; }
+.rel-indirect { background: rgba(100,116,139,0.12); color: var(--text3); border: 1px solid var(--border); }
+.rel-sector   { background: rgba(249,115,22,0.12);  color: #ea580c;       border: 1px solid rgba(249,115,22,0.3); }
+.rel-note { font-size: 11px; color: var(--text3); font-style: italic; margin-top: 4px; }
 .star-legend { font-size: 11px; color: var(--text3); margin-left: 2px; }
 .star-s5 .stars .s-on { color: #ef4444; } .star-s5 .star-score { color: #ef4444; }
 .star-s4 .stars .s-on { color: #f97316; } .star-s4 .star-score { color: #f97316; }
@@ -1819,13 +1823,23 @@ function renderNews(news) {
     const tier = n.tier || 4, stars = n.stars || 1;
     const badge = tier <= 3 ? `<span class="tier-badge tier-${tier}">${TIER_LABEL[tier]}</span>` : '';
     const reasons = (n.star_reasons || []).map(r => `<span class="star-tag">${escHtml(r)}</span>`).join('');
+    const rel = n.relevance || 'indirect';
+    const relBadge = rel === 'sector'
+      ? `<span class="rel-badge rel-sector">⚠ 섹터 뉴스</span>`
+      : rel === 'indirect'
+        ? `<span class="rel-badge rel-indirect">간접 언급</span>`
+        : '';
+    const relNote = rel === 'sector'
+      ? `<div class="rel-note">이 기사의 주요 종목이 해당 종목이 아닐 수 있습니다.</div>`
+      : '';
     return `
     <a class="news-card star-s${stars}" href="${n.link}" target="_blank" rel="noopener" style="text-decoration:none;color:inherit">
       ${n.thumbnail ? `<img class="news-thumb" src="${n.thumbnail}" alt="" onerror="this.style.display='none'"/>` : ''}
       <div class="news-body">
         <div class="news-title">${escHtml(n.title)}</div>
-        <div class="news-meta">${badge}${escHtml(n.publisher)} · ${n.date}</div>
+        <div class="news-meta">${badge}${relBadge}${escHtml(n.publisher)} · ${n.date}</div>
         ${n.summary ? `<div class="news-summary">${escHtml(n.summary)}</div>` : ''}
+        ${relNote}
         <div class="star-row">
           <span class="stars">${buildStars(stars)}</span>
           <span class="star-score">${stars}/5</span>
