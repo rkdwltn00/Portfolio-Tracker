@@ -320,9 +320,38 @@ body { padding-bottom: env(safe-area-inset-bottom); }
 .earnings-compare-nav { display: flex; gap: 0; background: var(--surface2); border-radius: var(--radius-sm); padding: 3px; margin-bottom: 20px; }
 .ecmp-btn { flex: 1; padding: 8px 10px; border: none; background: transparent; color: var(--text2); font-size: 13px; font-weight: 500; font-family: inherit; cursor: pointer; border-radius: 6px; transition: all .15s; white-space: nowrap; }
 .ecmp-btn.active { background: var(--surface); color: var(--text); font-weight: 700; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+/* 다음 실적 발표 카드 */
+.eq-upcoming-card {
+  background: var(--accent-light); border: 1.5px solid var(--accent); border-radius: var(--radius);
+  padding: 16px 20px; margin-bottom: 20px;
+}
+.eq-upcoming-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--accent); margin-bottom: 8px; }
+.eq-upcoming-row { display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap; }
+.eq-upcoming-date-val { font-size: 20px; font-weight: 700; }
+.eq-upcoming-est { display: flex; gap: 20px; flex-wrap: wrap; margin-top: 8px; }
+.eq-upcoming-est-item { }
+.eq-upcoming-est-label { font-size: 11px; color: var(--text2); margin-bottom: 2px; }
+.eq-upcoming-est-val { font-size: 15px; font-weight: 700; }
 .earnings-list { display: flex; flex-direction: column; gap: 20px; }
 .eq-quarter-label { font-size: 13px; color: var(--text2); margin-bottom: 4px; }
 .eq-quarter-period { font-size: 20px; font-weight: 700; margin-bottom: 12px; }
+
+/* ── Financials Tab ── */
+.fin-period-nav { display: flex; gap: 0; background: var(--surface2); border-radius: var(--radius-sm); padding: 3px; margin-bottom: 20px; width: fit-content; }
+.fin-period-btn { padding: 7px 22px; border: none; background: transparent; color: var(--text2); font-size: 13px; font-weight: 500; font-family: inherit; cursor: pointer; border-radius: 6px; transition: all .15s; }
+.fin-period-btn.active { background: var(--surface); color: var(--text); font-weight: 700; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+.fin-section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 22px; margin-bottom: 16px; box-shadow: var(--shadow); overflow-x: auto; }
+.fin-section-title { font-size: 15px; font-weight: 700; margin-bottom: 14px; }
+.fin-table { width: 100%; border-collapse: collapse; min-width: 400px; }
+.fin-table th, .fin-table td { padding: 10px 12px; text-align: right; font-size: 13px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.fin-table th:first-child, .fin-table td:first-child { text-align: left; font-weight: 600; color: var(--text2); min-width: 120px; }
+.fin-table thead th { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: .4px; background: var(--surface2); font-weight: 600; }
+.fin-table tbody tr:last-child td { border-bottom: none; }
+.fin-health-nav { display: flex; gap: 0; background: var(--surface2); border-radius: var(--radius-sm); padding: 2px; margin-bottom: 14px; width: fit-content; }
+.fin-health-btn { padding: 5px 14px; border: none; background: transparent; color: var(--text2); font-size: 12px; font-weight: 500; font-family: inherit; cursor: pointer; border-radius: 5px; transition: all .15s; }
+.fin-health-btn.active { background: var(--surface); color: var(--text); font-weight: 700; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+.fin-health-panel { display: none; }
+.fin-health-panel.active { display: block; }
 .eq-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 22px; box-shadow: var(--shadow); }
 .eq-status-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .eq-status-title { font-size: 17px; font-weight: 700; }
@@ -439,9 +468,14 @@ body { padding-bottom: env(safe-area-inset-bottom); }
 }
 @media (max-width: 600px) {
   :root { --header-h: 56px; }
-  .header { padding: 0 14px; gap: 8px; }
-  .header-logo { font-size: 15px; }
+  .header { padding: 0 10px; gap: 6px; }
+  .header-logo { font-size: 14px; }
   .user-name { display: none; }
+  /* 업데이트 버튼 세로 배열 방지 */
+  .update-wrap { flex-wrap: nowrap; gap: 4px; flex-shrink: 0; }
+  .progress-outer { width: 60px; }
+  .progress-msg { display: none; }
+  #btnUpdate { font-size: 11px; padding: 5px 8px; white-space: nowrap; }
   .main { padding: 14px 10px; }
   .stock-price { font-size: 22px; }
   .eq-metric-value { font-size: 20px; }
@@ -734,6 +768,7 @@ body { padding-bottom: env(safe-area-inset-bottom); }
         <button class="tab-btn" data-tab="news">📰 뉴스</button>
         <button class="tab-btn" data-tab="earnings">📊 실적</button>
         <button class="tab-btn" data-tab="chart">📈 차트</button>
+        <button class="tab-btn" data-tab="financials">📉 재무</button>
         <button class="tab-btn" data-tab="info">🏢 기업 정보</button>
       </div>
 
@@ -782,6 +817,17 @@ body { padding-bottom: env(safe-area-inset-bottom); }
         <div class="chart-wrap">
           <div class="chart-canvas-wrap"><canvas id="priceChart"></canvas></div>
           <div class="chart-vol-wrap"><canvas id="volChart"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Financials Tab -->
+      <div class="tab-panel" id="tab-financials">
+        <div class="fin-period-nav">
+          <button class="fin-period-btn active" data-fp="quarterly">분기</button>
+          <button class="fin-period-btn" data-fp="annual">연간</button>
+        </div>
+        <div id="financialsList">
+          <div class="spinner-wrap"><div class="spinner"></div>재무 정보 불러오는 중...</div>
         </div>
       </div>
 
@@ -1697,10 +1743,11 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 });
 
 function loadTabData(tab, ticker) {
-  if (tab === 'perf')     renderPerformance(ticker);
+  if (tab === 'perf')          renderPerformance(ticker);
   else if (tab === 'news')     loadNews(ticker, document.querySelector('.period-btn[data-period].active')?.dataset?.period || '1w');
   else if (tab === 'earnings') loadEarnings(ticker);
   else if (tab === 'chart')    loadChart(ticker, document.querySelector('.period-btn[data-cp].active')?.dataset?.cp || '1mo');
+  else if (tab === 'financials') loadFinancials(ticker, document.querySelector('.fin-period-btn.active')?.dataset?.fp || 'quarterly');
   else if (tab === 'info')     loadFundamentals(ticker);
 }
 
@@ -1779,8 +1826,10 @@ async function loadEarnings(ticker) {
   try {
     const r = await fetch(`/api/stock/earnings?ticker=${ticker}`);
     const data = await r.json();
-    _cacheSet(key, data); currentEarnings = data;
-    renderEarnings(data, currentCmp);
+    // 구버전 배열 형식 호환 처리
+    const normalized = Array.isArray(data) ? { quarters: data, upcoming: [] } : data;
+    _cacheSet(key, normalized); currentEarnings = normalized;
+    renderEarnings(normalized, currentCmp);
   } catch { listEl.innerHTML = '<div class="news-empty">실적 데이터를 불러오지 못했습니다.</div>'; }
   finally { _pending.delete(key); }
 }
@@ -1793,10 +1842,46 @@ document.querySelectorAll('.ecmp-btn').forEach(btn => {
   });
 });
 
+function _toQuarterLabel(dateStr) {
+  if (!dateStr) return '--';
+  const d = new Date(dateStr);
+  if (isNaN(d)) return dateStr;
+  const q = Math.ceil((d.getMonth() + 1) / 3);
+  return `${d.getFullYear()} Q${q}`;
+}
+
 function renderEarnings(data, cmp) {
   const listEl = document.getElementById('earningsList');
-  if (!data || !data.length) { listEl.innerHTML = '<div class="news-empty">실적 데이터가 없습니다.</div>'; return; }
-  listEl.innerHTML = data.slice(0, 2).map((q, i) => {
+  const quarters = data?.quarters || (Array.isArray(data) ? data : []);
+  if (!quarters.length) { listEl.innerHTML = '<div class="news-empty">실적 데이터가 없습니다.</div>'; return; }
+
+  // 다음 실적 발표 카드
+  const upcoming = data?.upcoming || [];
+  let upcomingHtml = '';
+  if (upcoming.length) {
+    const u = upcoming[0];
+    const eps = u.epsEstimate != null ? `$${u.epsEstimate.toFixed(2)}` : 'N/A';
+    const rev = u.revEstimateFmt || 'N/A';
+    upcomingHtml = `
+      <div class="eq-upcoming-card">
+        <div class="eq-upcoming-title">📅 다음 실적 발표 예정</div>
+        <div class="eq-upcoming-row">
+          <div class="eq-upcoming-date-val">${u.date || '--'}</div>
+        </div>
+        <div class="eq-upcoming-est">
+          <div class="eq-upcoming-est-item">
+            <div class="eq-upcoming-est-label">예상 EPS</div>
+            <div class="eq-upcoming-est-val">${eps}</div>
+          </div>
+          <div class="eq-upcoming-est-item">
+            <div class="eq-upcoming-est-label">예상 매출</div>
+            <div class="eq-upcoming-est-val">${rev}</div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  const quartersHtml = quarters.slice(0, 2).map((q, i) => {
     const epsActual = q.epsActual;
     const epsFmt = epsActual != null ? `$${epsActual.toFixed(2)}` : null;
     const revFmt = q.revenueActualFmt;
@@ -1817,10 +1902,11 @@ function renderEarnings(data, cmp) {
       const cls = delta>=0?'pos':'neg'; const sign = delta>=0?'+':'';
       return `${sub}<div class="eq-compare">${label} <span class="eq-delta ${cls}">${sign}${delta.toFixed(2)}%</span></div>`;
     };
+    const qLabel = i === 0 ? '최근 실적' : '이전 분기';
     return `
       <div>
-        <div class="eq-quarter-label">분기 실적 ${i+1}</div>
-        <div class="eq-quarter-period">${q.period||'--'}</div>
+        <div class="eq-quarter-label">${qLabel}</div>
+        <div class="eq-quarter-period">${_toQuarterLabel(q.period)} <span style="font-size:13px;color:var(--text3);font-weight:400">(${q.period||'--'})</span></div>
         <div class="eq-card">
           <div class="eq-status-row"><div><div class="eq-status-title">실적 발표</div></div></div>
           <div class="eq-metrics">
@@ -1840,6 +1926,8 @@ function renderEarnings(data, cmp) {
         </div>
       </div>`;
   }).join('');
+
+  listEl.innerHTML = upcomingHtml + quartersHtml;
 }
 
 /* ════════════════════════════════════════
@@ -1913,6 +2001,131 @@ function redrawChart() {
 }
 
 /* ════════════════════════════════════════
+   Financials
+════════════════════════════════════════ */
+document.querySelectorAll('.fin-period-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.fin-period-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    if (activeTicker) loadFinancials(activeTicker, btn.dataset.fp);
+  });
+});
+
+async function loadFinancials(ticker, period = 'quarterly') {
+  const key = `financials:${ticker}:${period}`;
+  const listEl = document.getElementById('financialsList');
+  const cached = _cacheGet(key);
+  if (cached) { renderFinancials(cached); return; }
+  if (_pending.has(key)) return;
+  _pending.add(key);
+  listEl.innerHTML = '<div class="spinner-wrap"><div class="spinner"></div>재무 정보 불러오는 중...</div>';
+  try {
+    const r = await fetch(`/api/stock/financials?ticker=${ticker}&period=${period}`);
+    const d = await r.json();
+    if (d.error) { listEl.innerHTML = `<div class="news-empty">${d.error}</div>`; return; }
+    _cacheSet(key, d);
+    renderFinancials(d);
+  } catch { listEl.innerHTML = '<div class="news-empty">재무 데이터를 불러오지 못했습니다.</div>'; }
+  finally { _pending.delete(key); }
+}
+
+function _fmtFinVal(v) {
+  if (v == null) return '-';
+  const abs = Math.abs(v);
+  const sign = v < 0 ? '-' : '';
+  if (abs >= 1e12) return `${sign}$${(abs/1e12).toFixed(2)}T`;
+  if (abs >= 1e9)  return `${sign}$${(abs/1e9).toFixed(2)}B`;
+  if (abs >= 1e6)  return `${sign}$${(abs/1e6).toFixed(2)}M`;
+  return `${sign}$${abs.toLocaleString()}`;
+}
+
+function renderFinancials(d) {
+  const listEl = document.getElementById('financialsList');
+  const dates = d.dates || [];
+  if (!dates.length) { listEl.innerHTML = '<div class="news-empty">재무 데이터가 없습니다.</div>'; return; }
+
+  const shortDate = s => {
+    const dt = new Date(s);
+    return isNaN(dt) ? s : `${dt.getFullYear()}.${String(dt.getMonth()+1).padStart(2,'0')}`;
+  };
+
+  const thead = `<thead><tr><th>항목</th>${dates.map(d=>`<th>${shortDate(d)}</th>`).join('')}</tr></thead>`;
+
+  const row = (label, series, fmt = _fmtFinVal) =>
+    `<tr><td>${label}</td>${dates.map(d => {
+      const v = series[d];
+      const cls = v != null && v < 0 ? ' class="neg"' : '';
+      return `<td${cls}>${fmt(v)}</td>`;
+    }).join('')}</tr>`;
+
+  const ratioPct = v => v == null ? '-' : `${v.toFixed(1)}%`;
+
+  listEl.innerHTML = `
+    <!-- 이익 -->
+    <div class="fin-section">
+      <div class="fin-section-title">이익</div>
+      <table class="fin-table">
+        ${thead}
+        <tbody>
+          ${row('매출', d.revenue)}
+          ${row('영업이익', d.operatingIncome)}
+          ${row('순이익', d.netIncome)}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 재무 상태 / 건전성 -->
+    <div class="fin-section">
+      <div class="fin-section-title">재무</div>
+      <div class="fin-health-nav">
+        <button class="fin-health-btn active" data-health="status">재무 상태</button>
+        <button class="fin-health-btn" data-health="ratio">건전성 지표</button>
+      </div>
+      <div class="fin-health-panel active" id="fin-panel-status">
+        <table class="fin-table">
+          ${thead}
+          <tbody>
+            ${row('유동자산', d.currentAssets)}
+            ${row('유동부채', d.currentLiabilities)}
+            ${row('비유동부채', d.nonCurrentLiabilities)}
+          </tbody>
+        </table>
+      </div>
+      <div class="fin-health-panel" id="fin-panel-ratio">
+        <table class="fin-table">
+          ${thead}
+          <tbody>
+            ${row('유동비율', d.currentRatio, ratioPct)}
+            ${row('부채비율', d.debtRatio, ratioPct)}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 현금흐름 -->
+    <div class="fin-section">
+      <div class="fin-section-title">현금흐름</div>
+      <table class="fin-table">
+        ${thead}
+        <tbody>
+          ${row('영업 현금 흐름', d.operatingCashflow)}
+          ${row('순현금변동', d.netCashChange)}
+        </tbody>
+      </table>
+    </div>`;
+
+  // 재무 상태 / 건전성 지표 서브탭 이벤트
+  listEl.querySelectorAll('.fin-health-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      listEl.querySelectorAll('.fin-health-btn').forEach(b => b.classList.remove('active'));
+      listEl.querySelectorAll('.fin-health-panel').forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById(`fin-panel-${btn.dataset.health}`).classList.add('active');
+    });
+  });
+}
+
+/* ════════════════════════════════════════
    Fundamentals
 ════════════════════════════════════════ */
 async function loadFundamentals(ticker) {
@@ -1952,7 +2165,8 @@ function _renderFundamentals(d) {
     { label:'52주 최고', val: d.high52w != null ? `${d.currency||''} ${d.high52w}` : null },
     { label:'52주 최저', val: d.low52w  != null ? `${d.currency||''} ${d.low52w}`  : null },
     { label:'평균 거래량', val: d.avgVolume ? fmtNum(d.avgVolume) : null },
-    { label:'임직원 수',  val: d.employees ? fmtNum(d.employees)+'명' : null },
+    { label:'임직원 수',   val: d.employees ? fmtNum(d.employees)+'명' : null },
+    { label:'발행 주식수', val: d.sharesOutstanding ? fmtNum(d.sharesOutstanding)+'주' : null },
   ];
   grid.innerHTML = metrics.filter(m => m.val != null).map(m => `
     <div class="fund-card">

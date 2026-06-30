@@ -258,8 +258,19 @@ def _save_user_field(c, user_id: int, field: str, value: str):
     except Exception:
         pass
 
-VERSION = "2.1.3"
+VERSION = "2.1.4"
 CHANGELOG = [
+    {
+        "version": "2.1.4",
+        "date": "2026-06-30",
+        "changes": [
+            "실적 탭: 다음 실적 발표 날짜·예상 EPS·예상 매출 카드 추가 (모든 비교 탭 공통 표시)",
+            "실적 탭: 분기 레이블 실제 연도·분기(예: 2025 Q2)로 개선",
+            "재무 탭 신규 추가: 이익(매출·영업이익·순이익), 재무(유동자산·부채·건전성 지표), 현금흐름, 분기/연간 전환",
+            "기업정보 탭: 발행 주식수 항목 추가",
+            "모바일 헤더: 업데이트 버튼 세로 배열 문제 수정 (progress-msg 숨김, 버튼 크기 축소)",
+        ]
+    },
     {
         "version": "2.1.3",
         "date": "2026-06-30",
@@ -1319,16 +1330,15 @@ def api_earnings():
 
         def _fetch_rev_estimate():
             rev_estimate_map: dict = {}
+            next_quarter: dict = {}
             try:
-                re_df = t.revenue_estimate
-                if re_df is None or re_df.empty:
-                    return rev_estimate_map
                 from yfinance.data import YfData as _YfData
                 _tr = _YfData(session=None).get_raw_json(
                     f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{ticker}",
                     params={"modules": "earningsTrend"}
                 )
                 for item in _tr["quoteSummary"]["result"][0]["earningsTrend"]["trend"]:
+                    item_period = item.get("period", "")
                     end = item.get("endDate")
                     if isinstance(end, dict):
                         end = end.get("fmt", "")
@@ -1336,22 +1346,54 @@ def api_earnings():
                     rev_est = item.get("revenueEstimate", {})
                     avg_obj = rev_est.get("avg", {})
                     avg_raw = avg_obj.get("raw") if isinstance(avg_obj, dict) else avg_obj
+                    eps_est = item.get("earningsEstimate", {})
+                    eps_avg = eps_est.get("avg", {})
+                    eps_raw = eps_avg.get("raw") if isinstance(eps_avg, dict) else eps_avg
                     if avg_raw:
                         rev_estimate_map[period_key] = {
                             "estimate":    float(avg_raw),
                             "estimateFmt": _fmt_revenue(avg_raw),
                         }
+                    # +1q = 다음 분기 예측치
+                    if item_period == "+1q":
+                        next_quarter = {
+                            "period":          period_key,
+                            "epsEstimate":     round(float(eps_raw), 4) if eps_raw is not None else None,
+                            "revEstimate":     float(avg_raw) if avg_raw else None,
+                            "revEstimateFmt":  _fmt_revenue(avg_raw) if avg_raw else None,
+                        }
             except Exception as e:
                 print(f"[earnings:{ticker}] _fetch_rev_estimate 오류: {type(e).__name__}: {e}")
-            return rev_estimate_map
+            return rev_estimate_map, next_quarter
 
-        with ThreadPoolExecutor(max_workers=3) as ex:
-            f_eps  = ex.submit(_fetch_eps)
-            f_rev  = ex.submit(_fetch_rev)
-            f_rest = ex.submit(_fetch_rev_estimate)
-            eps_rows        = f_eps.result()
-            rev_list        = f_rev.result()
-            rev_estimate_map = f_rest.result()
+        def _fetch_upcoming():
+            try:
+                ed = t.earnings_dates
+                if ed is None or ed.empty:
+                    return []
+                future = ed[ed["Reported EPS"].isna()].sort_index()
+                if future.empty:
+                    return []
+                dt   = future.index[0]
+                row  = future.iloc[0]
+                eps  = row.get("EPS Estimate")
+                return [{
+                    "date":        dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)[:10],
+                    "epsEstimate": float(eps) if pd.notna(eps) else None,
+                }]
+            except Exception as e:
+                print(f"[earnings:{ticker}] _fetch_upcoming 오류: {type(e).__name__}: {e}")
+                return []
+
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            f_eps      = ex.submit(_fetch_eps)
+            f_rev      = ex.submit(_fetch_rev)
+            f_rest     = ex.submit(_fetch_rev_estimate)
+            f_upcoming = ex.submit(_fetch_upcoming)
+            eps_rows              = f_eps.result()
+            rev_list              = f_rev.result()
+            rev_estimate_map, next_quarter = f_rest.result()
+            upcoming_raw          = f_upcoming.result()
 
         # ── 결합 ──────────────────────────────────────────────────────────────
         rows = []
@@ -1385,7 +1427,26 @@ def api_earnings():
                 rows[i]["epsYoYPct"] = round((rows[i]["epsActual"] - ye) / abs(ye) * 100, 2) if ye else None
                 rows[i]["revYoYPct"] = round((rows[i]["revenueActual"] - yr) / abs(yr) * 100, 2) if yr else None
 
-        result = rows[:2]
+        # 다음 실적 발표 카드에 next_quarter 예측치 병합
+        upcoming = []
+        if upcoming_raw:
+            u = upcoming_raw[0].copy()
+            if next_quarter:
+                u["revEstimate"]    = next_quarter.get("revEstimate")
+                u["revEstimateFmt"] = next_quarter.get("revEstimateFmt")
+                # epsEstimate는 upcoming_raw(earnings_dates)에서 우선, 없으면 earningsTrend 사용
+                if u.get("epsEstimate") is None:
+                    u["epsEstimate"] = next_quarter.get("epsEstimate")
+            upcoming = [u]
+        elif next_quarter.get("period"):
+            upcoming = [{
+                "date":          next_quarter["period"],
+                "epsEstimate":   next_quarter.get("epsEstimate"),
+                "revEstimate":   next_quarter.get("revEstimate"),
+                "revEstimateFmt":next_quarter.get("revEstimateFmt"),
+            }]
+
+        result = {"quarters": rows[:2], "upcoming": upcoming}
         _cache.set(cache_key, result, TTL_EARNINGS)
         return jsonify(result)
     except Exception as e:
@@ -1479,10 +1540,93 @@ def api_fundamentals():
             "avgVolume":     info.get("averageVolume"),
             "sector":        sector_ko or None,
             "industry":      ind_ko or None,
-            "employees":     info.get("fullTimeEmployees"),
-            "description":   desc_ko,
-            "currency":      info.get("currency", "USD"),
-            "website":       info.get("website", ""),
+            "employees":          info.get("fullTimeEmployees"),
+            "sharesOutstanding":  info.get("sharesOutstanding") or info.get("impliedSharesOutstanding"),
+            "description":        desc_ko,
+            "currency":           info.get("currency", "USD"),
+            "website":            info.get("website", ""),
+        }
+        _cache.set(cache_key, result, TTL_FUNDAMENTALS)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/stock/financials")
+def api_financials():
+    ticker = request.args.get("ticker", "")
+    period = request.args.get("period", "quarterly")
+    cache_key = f"financials:{ticker}:{period}"
+    cached = _cache.get(cache_key)
+    if cached:
+        return jsonify(cached)
+    try:
+        t = yf.Ticker(ticker)
+        if period == "annual":
+            fin_df = t.financials
+            bal_df = t.balance_sheet
+            cf_df  = t.cashflow
+        else:
+            fin_df = t.quarterly_financials
+            bal_df = t.quarterly_balance_sheet
+            cf_df  = t.quarterly_cashflow
+
+        def _series(df, *keys):
+            if df is None or df.empty:
+                return {}
+            for k in keys:
+                if k in df.index:
+                    out = {}
+                    for col, v in df.loc[k].items():
+                        ds = col.strftime("%Y-%m-%d") if hasattr(col, "strftime") else str(col)[:10]
+                        out[ds] = round(float(v), 0) if pd.notna(v) else None
+                    return out
+            return {}
+
+        dates = []
+        if fin_df is not None and not fin_df.empty:
+            dates = sorted(
+                [c.strftime("%Y-%m-%d") if hasattr(c, "strftime") else str(c)[:10] for c in fin_df.columns],
+                reverse=True
+            )[:4]
+
+        cur_assets = _series(bal_df, "Current Assets", "Total Current Assets")
+        cur_liab   = _series(bal_df, "Current Liabilities", "Total Current Liabilities")
+        nc_liab    = _series(bal_df,
+                        "Total Non Current Liabilities Net Minority Interest",
+                        "Non Current Deferred Liabilities Net Minority Interest",
+                        "Long Term Debt And Capital Lease Obligation",
+                        "Long Term Debt")
+        equity_s   = _series(bal_df, "Stockholders Equity", "Total Stockholder Equity",
+                        "Total Equity Gross Minority Interest", "Common Stock Equity")
+
+        current_ratio = {}
+        debt_ratio    = {}
+        for d in dates:
+            ca = cur_assets.get(d)
+            cl = cur_liab.get(d)
+            nc = nc_liab.get(d)
+            eq = equity_s.get(d)
+            if ca and cl and cl != 0:
+                current_ratio[d] = round(ca / cl * 100, 1)
+            if eq and eq != 0 and (cl is not None or nc is not None):
+                total_debt = (cl or 0) + (nc or 0)
+                debt_ratio[d] = round(total_debt / abs(eq) * 100, 1)
+
+        result = {
+            "period":               period,
+            "dates":                dates,
+            "revenue":              _series(fin_df, "Total Revenue", "Revenue"),
+            "operatingIncome":      _series(fin_df, "Operating Income", "EBIT", "Operating Profit"),
+            "netIncome":            _series(fin_df, "Net Income"),
+            "currentAssets":        cur_assets,
+            "currentLiabilities":   cur_liab,
+            "nonCurrentLiabilities":nc_liab,
+            "operatingCashflow":    _series(cf_df, "Operating Cash Flow", "Cash Flows From Operations",
+                                        "Net Cash Provided By Operating Activities"),
+            "netCashChange":        _series(cf_df, "Changes In Cash", "Net Change In Cash",
+                                        "Free Cash Flow"),
+            "currentRatio":         current_ratio,
+            "debtRatio":            debt_ratio,
         }
         _cache.set(cache_key, result, TTL_FUNDAMENTALS)
         return jsonify(result)
