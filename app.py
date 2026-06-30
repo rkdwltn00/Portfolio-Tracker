@@ -258,8 +258,18 @@ def _save_user_field(c, user_id: int, field: str, value: str):
     except Exception:
         pass
 
-VERSION = "2.2.1"
+VERSION = "2.2.2"
 CHANGELOG = [
+    {
+        "version": "2.2.2",
+        "date": "2026-06-30",
+        "changes": [
+            "Rule of 40 공식 변경: GAAP 매출 YoY 성장률 + Non-GAAP 순이익 마진 (EPS × 희석주식수 / 매출)",
+            "EBITDA 별도 API 호출 제거 → quarterly_financials 단일 호출로 매출 + 희석주식수 동시 추출",
+            "_to_pd 헬퍼 함수를 fetch 함수들보다 먼저 정의 (NameError 버그 수정)",
+            "조회 속도 개선: max_workers 5→4, quarterly_income_stmt 호출 완전 제거",
+        ]
+    },
     {
         "version": "2.2.1",
         "date": "2026-06-30",
@@ -1416,6 +1426,11 @@ def api_earnings():
     try:
         t = yf.Ticker(ticker)
 
+        # ── 공통 헬퍼 (fetch 함수들보다 먼저 정의해야 클로저에서 사용 가능) ──────
+        def _to_pd_q(col):
+            c = col if isinstance(col, pd.Timestamp) else pd.Timestamp(str(col))
+            return c.tz_localize(None) if c.tzinfo else c
+
         # ── 병렬 fetch: earnings_dates + quarterly_financials ──────────────────
         def _fetch_eps():
             rows = []
@@ -1442,25 +1457,40 @@ def api_earnings():
             return rows
 
         def _fetch_rev():
-            rev_list = []
+            """매출 + 희석주식수를 quarterly_financials에서 한 번에 추출."""
+            rev_list:    list = []
+            shares_by_ym: dict = {}
             try:
                 print(f"[earnings:{ticker}] quarterly_financials 조회 시작")
                 qf = t.quarterly_financials
                 if qf is None or qf.empty:
                     print(f"[earnings:{ticker}] quarterly_financials 비어있음")
-                    return rev_list
-                print(f"[earnings:{ticker}] quarterly_financials 인덱스: {list(qf.index)}")
+                    return rev_list, shares_by_ym
+                idx = list(qf.index)
+                print(f"[earnings:{ticker}] quarterly_financials 인덱스: {idx}")
+
+                # 매출
                 for label in ["Total Revenue", "Revenue"]:
-                    if label in qf.index:
+                    if label in idx:
                         for col, val in qf.loc[label].items():
                             if pd.notna(val):
                                 rev_list.append((col, float(val)))
                         break
                 rev_list.sort(key=lambda x: x[0], reverse=True)
                 print(f"[earnings:{ticker}] 매출 행 수: {len(rev_list)}")
+
+                # 희석주식수 (Non-GAAP 마진 계산용)
+                for label in ["Diluted Average Shares", "Basic Average Shares",
+                              "Diluted Shares", "Basic Shares"]:
+                    if label in idx:
+                        for col, val in qf.loc[label].items():
+                            if pd.notna(val):
+                                shares_by_ym[_to_pd_q(col).strftime("%Y-%m")] = float(val)
+                        print(f"[earnings:{ticker}] 희석주식수 소스: {label}, 분기 수: {len(shares_by_ym)}")
+                        break
             except Exception as e:
                 print(f"[earnings:{ticker}] _fetch_rev 오류: {type(e).__name__}: {e}")
-            return rev_list
+            return rev_list, shares_by_ym
 
         def _fetch_rev_estimate():
             rev_estimate_map: dict = {}
@@ -1522,69 +1552,15 @@ def api_earnings():
                 print(f"[earnings:{ticker}] _fetch_upcoming 오류: {type(e).__name__}: {e}")
                 return []
 
-        def _fetch_ebitda():
-            """분기별 EBITDA를 YM키 딕셔너리로 반환.
-            우선순위: ① Normalized EBITDA ② EBITDA ③ EBIT+D&A 계산"""
-            by_ym: dict = {}
-            ebitda_source = "없음"
-            try:
-                qs = t.quarterly_income_stmt
-                if qs is None or qs.empty:
-                    print(f"[earnings:{ticker}] income_stmt 비어있음")
-                    return by_ym
-
-                idx = list(qs.index)
-                print(f"[earnings:{ticker}] income_stmt 레이블: {idx}")
-
-                # ① Normalized EBITDA (조정) → EBITDA 순으로 직접 조회
-                for label in ["Normalized EBITDA", "EBITDA", "Total EBITDA"]:
-                    if label in idx:
-                        for col, val in qs.loc[label].items():
-                            if pd.notna(val):
-                                by_ym[_to_pd(col).strftime("%Y-%m")] = float(val)
-                        if by_ym:
-                            ebitda_source = label
-                            break
-
-                # ② EBIT + D&A 로 계산 (직접 항목 없을 때)
-                if not by_ym:
-                    ebit_row, da_row = None, None
-                    for lbl in ["EBIT", "Operating Income", "Operating Profit"]:
-                        if lbl in idx:
-                            ebit_row = qs.loc[lbl]
-                            break
-                    for lbl in ["Reconciled Depreciation",
-                                "Depreciation And Amortization",
-                                "Depreciation Amortization Depletion",
-                                "Depreciation"]:
-                        if lbl in idx:
-                            da_row = qs.loc[lbl]
-                            break
-                    if ebit_row is not None and da_row is not None:
-                        for col in qs.columns:
-                            ebit = ebit_row.get(col)
-                            da   = da_row.get(col)
-                            if pd.notna(ebit) and pd.notna(da):
-                                by_ym[_to_pd(col).strftime("%Y-%m")] = float(ebit) + float(da)
-                        if by_ym:
-                            ebitda_source = f"EBIT+D&A 계산"
-
-                print(f"[earnings:{ticker}] EBITDA 소스: {ebitda_source}, 분기 수: {len(by_ym)}")
-            except Exception as e:
-                print(f"[earnings:{ticker}] _fetch_ebitda 오류: {type(e).__name__}: {e}")
-            return by_ym, ebitda_source
-
-        with ThreadPoolExecutor(max_workers=5) as ex:
+        with ThreadPoolExecutor(max_workers=4) as ex:
             f_eps      = ex.submit(_fetch_eps)
             f_rev      = ex.submit(_fetch_rev)
             f_rest     = ex.submit(_fetch_rev_estimate)
             f_upcoming = ex.submit(_fetch_upcoming)
-            f_ebitda   = ex.submit(_fetch_ebitda)
-            eps_rows              = f_eps.result()
-            rev_list              = f_rev.result()
+            eps_rows                   = f_eps.result()
+            rev_list, shares_by_ym     = f_rev.result()
             rev_estimate_map, next_quarter = f_rest.result()
-            upcoming_raw          = f_upcoming.result()
-            ebitda_by_ym, ebitda_source = f_ebitda.result()
+            upcoming_raw               = f_upcoming.result()
 
         # ── 매출 YM 인덱스 구축 ─────────────────────────────────────────────────
         def _to_pd(col):
@@ -1667,57 +1643,58 @@ def api_earnings():
             }]
 
         # ── Rule of 40 계산 ─────────────────────────────────────────────────────
-        # = 전년 동분기 매출 성장률(YoY %) + 조정 EBITDA 마진율(%)
+        # = GAAP 분기 매출 YoY 성장률(%) + Non-GAAP 순이익 마진율(%)
+        # Non-GAAP 순이익 = Non-GAAP EPS × 희석주식수
+        # Non-GAAP 순이익 마진 = Non-GAAP 순이익 / 매출 × 100
         rule_of_40 = None
         try:
             if rev_list:
-                recent_col, recent_rev = rev_list[0]   # 최신 분기
+                recent_col, recent_rev = rev_list[0]
                 recent_pd = _to_pd(recent_col)
                 recent_ym = recent_pd.strftime("%Y-%m")
 
-                # 전년 동분기: ±2개월 허용(회계연도 차이)
-                yoy_rev = None
+                # ① GAAP YoY 매출 성장률 (±2개월 허용)
+                rev_growth_yoy = None
                 for col, val in rev_list[1:]:
                     col_pd = _to_pd(col)
                     months = (recent_pd.year - col_pd.year) * 12 + (recent_pd.month - col_pd.month)
                     if 10 <= months <= 14:
-                        yoy_rev = val
+                        if abs(val) > 0:
+                            rev_growth_yoy = (recent_rev - val) / abs(val) * 100
                         break
 
-                rev_growth_yoy = None
-                if yoy_rev and abs(yoy_rev) > 0:
-                    rev_growth_yoy = (recent_rev - yoy_rev) / abs(yoy_rev) * 100
+                # ② Non-GAAP 순이익 마진 = (Non-GAAP EPS × 희석주식수) / 매출 × 100
+                non_gaap_margin = None
+                if eps_rows and abs(recent_rev) > 0:
+                    recent_eps = eps_rows[0].get("epsActual")
+                    # eps_rows는 최신 순 → eps_rows[0]이 가장 최근
+                    # 날짜 YM 매칭으로 더 정확하게 연결
+                    if recent_eps is not None:
+                        # 희석주식수: ±2개월 허용
+                        shares = None
+                        for delta in [0, -1, 1, -2, 2]:
+                            ym_key = (recent_pd + pd.DateOffset(months=delta)).strftime("%Y-%m")
+                            if ym_key in shares_by_ym:
+                                shares = shares_by_ym[ym_key]
+                                break
+                        if shares:
+                            non_gaap_net = recent_eps * shares
+                            non_gaap_margin = non_gaap_net / abs(recent_rev) * 100
+                            print(f"[earnings:{ticker}] Non-GAAP 마진: EPS={recent_eps} × 주식={shares:.0f} / 매출={recent_rev:.0f} = {non_gaap_margin:.1f}%")
 
-                # EBITDA 마진 = EBITDA / 매출 × 100  (YM ±2개월 허용)
-                ebitda_margin = None
-                matched_ebitda = None
-                if ebitda_by_ym and recent_rev:
-                    for delta in [0, -1, 1, -2, 2]:
-                        ym_key = (recent_pd + pd.DateOffset(months=delta)).strftime("%Y-%m")
-                        if ym_key in ebitda_by_ym:
-                            matched_ebitda = ebitda_by_ym[ym_key]
-                            ebitda_margin = matched_ebitda / abs(recent_rev) * 100
-                            break
-
-                is_adjusted = ebitda_source.startswith("Normalized")
-                ebitda_label = "조정 EBITDA" if is_adjusted else (
-                    "EBITDA" if "EBITDA" in ebitda_source else "EBIT+D&A")
-
-                if rev_growth_yoy is not None and ebitda_margin is not None:
+                if rev_growth_yoy is not None and non_gaap_margin is not None:
                     rule_of_40 = {
-                        "value":        round(rev_growth_yoy + ebitda_margin, 1),
-                        "revGrowthYoY": round(rev_growth_yoy, 1),
-                        "ebitdaMargin": round(ebitda_margin, 1),
-                        "ebitdaLabel":  ebitda_label,
-                        "period":       recent_ym,
+                        "value":          round(rev_growth_yoy + non_gaap_margin, 1),
+                        "revGrowthYoY":   round(rev_growth_yoy, 1),
+                        "nonGaapMargin":  round(non_gaap_margin, 1),
+                        "period":         recent_ym,
                     }
                 elif rev_growth_yoy is not None:
                     rule_of_40 = {
-                        "value":        None,
-                        "revGrowthYoY": round(rev_growth_yoy, 1),
-                        "ebitdaMargin": None,
-                        "ebitdaLabel":  None,
-                        "period":       recent_ym,
+                        "value":          None,
+                        "revGrowthYoY":   round(rev_growth_yoy, 1),
+                        "nonGaapMargin":  None,
+                        "period":         recent_ym,
                     }
         except Exception as e:
             print(f"[earnings:{ticker}] rule_of_40 계산 오류: {type(e).__name__}: {e}")

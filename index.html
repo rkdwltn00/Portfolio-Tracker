@@ -1932,24 +1932,22 @@ function renderEarnings(data, cmp) {
   const buildR40Html = () => {
     if (!r40) return '';
     const rev    = r40.revGrowthYoY;
-    const margin = r40.ebitdaMargin;
+    const margin = r40.nonGaapMargin;
     const val    = r40.value;
-    const elbl   = r40.ebitdaLabel || 'EBITDA';
 
     const revStr    = rev    != null ? `매출 YoY <span>${rev >= 0 ? '+' : ''}${rev.toFixed(1)}%</span>` : null;
-    const marginStr = margin != null ? `${elbl} 마진 <span>${margin.toFixed(1)}%</span>` : null;
+    const marginStr = margin != null ? `Non-GAAP 순이익 마진 <span>${margin.toFixed(1)}%</span>` : null;
     const breakdown = [revStr, marginStr].filter(Boolean).join(' + ');
 
     if (val == null) {
       return `<div class="r40-wrap">
         <div class="r40-label">Rule of 40</div>
-        <div class="r40-breakdown">${breakdown || 'N/A'}${!marginStr ? ' · EBITDA 데이터 조회 중' : ''}</div>
+        <div class="r40-breakdown">${breakdown || 'N/A'}${!marginStr ? ' · 희석주식수 데이터 없음' : ''}</div>
       </div>`;
     }
 
     const cls   = val >= 40 ? 'r40-good' : val >= 20 ? 'r40-mid' : 'r40-bad';
     const grade = val >= 40 ? '우수 ✓' : val >= 20 ? '보통' : '미달';
-    const formula = `(${elbl} / 매출 × 100)`;
     return `<div class="r40-wrap">
       <div class="r40-label">Rule of 40</div>
       <div class="r40-row">
@@ -1957,7 +1955,7 @@ function renderEarnings(data, cmp) {
         <span style="font-size:12px;color:var(--text2)">${grade}</span>
       </div>
       <div class="r40-breakdown">${breakdown}</div>
-      <div style="font-size:10px;color:var(--text3);margin-top:2px">매출 성장률 YoY% + ${elbl} 마진% ${formula}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">GAAP 매출 YoY 성장률 + Non-GAAP 순이익 마진 (EPS × 희석주식수 / 매출)</div>
     </div>`;
   };
 
