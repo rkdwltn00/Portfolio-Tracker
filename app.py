@@ -258,8 +258,16 @@ def _save_user_field(c, user_id: int, field: str, value: str):
     except Exception:
         pass
 
-VERSION = "2.1.6"
+VERSION = "2.1.7"
 CHANGELOG = [
+    {
+        "version": "2.1.7",
+        "date": "2026-06-30",
+        "changes": [
+            "재무 탭 이익 차트: 매출·영업이익·순이익 바 중심에 점 표시 및 연결선 추가",
+            "재무 탭 이익 차트: 연속 분기/연도 간 성장률(%) 레이블 연결선 위에 표시 (양수=초록, 음수=빨강)",
+        ]
+    },
     {
         "version": "2.1.6",
         "date": "2026-06-30",
