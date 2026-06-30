@@ -258,8 +258,17 @@ def _save_user_field(c, user_id: int, field: str, value: str):
     except Exception:
         pass
 
-VERSION = "2.1.9"
+VERSION = "2.2.0"
 CHANGELOG = [
+    {
+        "version": "2.2.0",
+        "date": "2026-06-30",
+        "changes": [
+            "실적 탭 최근 실적 카드: Rule of 40 지표 추가 (전년 동분기 매출 YoY % + 조정 EBITDA 마진%)",
+            "Rule of 40 ≥40 초록(우수) / 20~39 주황(보통) / <20 빨강(미달) 색상 표시",
+            "EBITDA 데이터 없을 경우 매출 성장률만 부분 표시",
+        ]
+    },
     {
         "version": "2.1.9",
         "date": "2026-06-30",
@@ -1504,15 +1513,34 @@ def api_earnings():
                 print(f"[earnings:{ticker}] _fetch_upcoming 오류: {type(e).__name__}: {e}")
                 return []
 
-        with ThreadPoolExecutor(max_workers=4) as ex:
+        def _fetch_ebitda():
+            """분기별 (Normalized) EBITDA를 YM키 딕셔너리로 반환."""
+            by_ym: dict = {}
+            try:
+                qs = t.quarterly_income_stmt
+                if qs is None or qs.empty:
+                    return by_ym
+                for label in ["Normalized EBITDA", "EBITDA"]:
+                    if label in qs.index:
+                        for col, val in qs.loc[label].items():
+                            if pd.notna(val):
+                                by_ym[_to_pd(col).strftime("%Y-%m")] = float(val)
+                        break
+            except Exception as e:
+                print(f"[earnings:{ticker}] _fetch_ebitda 오류: {type(e).__name__}: {e}")
+            return by_ym
+
+        with ThreadPoolExecutor(max_workers=5) as ex:
             f_eps      = ex.submit(_fetch_eps)
             f_rev      = ex.submit(_fetch_rev)
             f_rest     = ex.submit(_fetch_rev_estimate)
             f_upcoming = ex.submit(_fetch_upcoming)
+            f_ebitda   = ex.submit(_fetch_ebitda)
             eps_rows              = f_eps.result()
             rev_list              = f_rev.result()
             rev_estimate_map, next_quarter = f_rest.result()
             upcoming_raw          = f_upcoming.result()
+            ebitda_by_ym          = f_ebitda.result()
 
         # ── 매출 YM 인덱스 구축 ─────────────────────────────────────────────────
         def _to_pd(col):
@@ -1594,7 +1622,56 @@ def api_earnings():
                 "revEstimateFmt":next_quarter.get("revEstimateFmt"),
             }]
 
-        result = {"quarters": rows[:2], "upcoming": upcoming}
+        # ── Rule of 40 계산 ─────────────────────────────────────────────────────
+        # = 전년 동분기 매출 성장률(YoY %) + 조정 EBITDA 마진율(%)
+        rule_of_40 = None
+        try:
+            if rev_list:
+                recent_col, recent_rev = rev_list[0]   # 최신 분기
+                recent_pd = _to_pd(recent_col)
+                recent_ym = recent_pd.strftime("%Y-%m")
+
+                # 전년 동분기: ±2개월 허용(회계연도 차이)
+                yoy_rev = None
+                for col, val in rev_list[1:]:
+                    col_pd = _to_pd(col)
+                    months = (recent_pd.year - col_pd.year) * 12 + (recent_pd.month - col_pd.month)
+                    if 10 <= months <= 14:
+                        yoy_rev = val
+                        break
+
+                rev_growth_yoy = None
+                if yoy_rev and abs(yoy_rev) > 0:
+                    rev_growth_yoy = (recent_rev - yoy_rev) / abs(yoy_rev) * 100
+
+                # EBITDA 마진: YM ±2개월 허용
+                ebitda_margin = None
+                if ebitda_by_ym and recent_rev:
+                    for delta in [0, -1, 1, -2, 2]:
+                        ym_key = (recent_pd + pd.DateOffset(months=delta)).strftime("%Y-%m")
+                        if ym_key in ebitda_by_ym:
+                            ebitda_margin = ebitda_by_ym[ym_key] / abs(recent_rev) * 100
+                            break
+
+                if rev_growth_yoy is not None and ebitda_margin is not None:
+                    rule_of_40 = {
+                        "value":        round(rev_growth_yoy + ebitda_margin, 1),
+                        "revGrowthYoY": round(rev_growth_yoy, 1),
+                        "ebitdaMargin": round(ebitda_margin, 1),
+                        "period":       recent_ym,
+                    }
+                elif rev_growth_yoy is not None:
+                    # EBITDA 없으면 매출 성장률만 표시 (부분 정보)
+                    rule_of_40 = {
+                        "value":        None,
+                        "revGrowthYoY": round(rev_growth_yoy, 1),
+                        "ebitdaMargin": None,
+                        "period":       recent_ym,
+                    }
+        except Exception as e:
+            print(f"[earnings:{ticker}] rule_of_40 계산 오류: {type(e).__name__}: {e}")
+
+        result = {"quarters": rows[:2], "upcoming": upcoming, "ruleOf40": rule_of_40}
         _cache.set(cache_key, result, TTL_EARNINGS)
         return jsonify(result)
     except Exception as e:
