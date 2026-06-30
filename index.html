@@ -2039,9 +2039,39 @@ function _fmtFinVal(v) {
   return `${sign}$${abs.toLocaleString()}`;
 }
 
-function renderFinancials(d) {
+let _finCharts = [];
+function _destroyFinCharts() {
+  _finCharts.forEach(c => { try { c.destroy(); } catch(e) {} });
+  _finCharts = [];
+}
+
+function _makeFinChart(canvasId, labels, datasets, ytickFmt) {
+  const el = document.getElementById(canvasId);
+  if (!el) return;
+  const c = chartColors();
+  const chart = new Chart(el, {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
+      plugins: {
+        legend: { display: datasets.length > 1, position: 'top', labels: { color: c.text, font: { size: 11 }, boxWidth: 10, padding: 10 } },
+        tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ytickFmt(ctx.raw)}` } }
+      },
+      scales: {
+        x: { ticks: { color: c.text, font: { size: 11 } }, grid: { color: c.grid } },
+        y: { ticks: { color: c.text, font: { size: 10 }, callback: ytickFmt }, grid: { color: c.grid } }
+      }
+    }
+  });
+  _finCharts.push(chart);
+}
+
+function renderFinancials(data) {
+  _destroyFinCharts();
   const listEl = document.getElementById('financialsList');
-  const dates = d.dates || [];
+  // 과거→현재 순서 (왼쪽=오래된, 오른쪽=최근)
+  const dates = [...(data.dates || [])].reverse();
   if (!dates.length) { listEl.innerHTML = '<div class="news-empty">재무 데이터가 없습니다.</div>'; return; }
 
   const shortDate = s => {
@@ -2049,11 +2079,11 @@ function renderFinancials(d) {
     return isNaN(dt) ? s : `${dt.getFullYear()}.${String(dt.getMonth()+1).padStart(2,'0')}`;
   };
 
-  const thead = `<thead><tr><th>항목</th>${dates.map(d=>`<th>${shortDate(d)}</th>`).join('')}</tr></thead>`;
+  const thead = `<thead><tr><th>항목</th>${dates.map(dt => `<th>${shortDate(dt)}</th>`).join('')}</tr></thead>`;
 
   const row = (label, series, fmt = _fmtFinVal) =>
-    `<tr><td>${label}</td>${dates.map(d => {
-      const v = series[d];
+    `<tr><td>${label}</td>${dates.map(dt => {
+      const v = series?.[dt];
       const cls = v != null && v < 0 ? ' class="neg"' : '';
       return `<td${cls}>${fmt(v)}</td>`;
     }).join('')}</tr>`;
@@ -2067,14 +2097,15 @@ function renderFinancials(d) {
       <table class="fin-table">
         ${thead}
         <tbody>
-          ${row('매출', d.revenue)}
-          ${row('영업이익', d.operatingIncome)}
-          ${row('순이익', d.netIncome)}
+          ${row('매출', data.revenue)}
+          ${row('영업이익', data.operatingIncome)}
+          ${row('순이익', data.netIncome)}
         </tbody>
       </table>
+      <div style="height:220px;margin-top:16px"><canvas id="fin-chart-income"></canvas></div>
     </div>
 
-    <!-- 재무 상태 / 건전성 -->
+    <!-- 재무 -->
     <div class="fin-section">
       <div class="fin-section-title">재무</div>
       <div class="fin-health-nav">
@@ -2085,20 +2116,22 @@ function renderFinancials(d) {
         <table class="fin-table">
           ${thead}
           <tbody>
-            ${row('유동자산', d.currentAssets)}
-            ${row('유동부채', d.currentLiabilities)}
-            ${row('비유동부채', d.nonCurrentLiabilities)}
+            ${row('유동자산', data.currentAssets)}
+            ${row('유동부채', data.currentLiabilities)}
+            ${row('비유동부채', data.nonCurrentLiabilities)}
           </tbody>
         </table>
+        <div style="height:220px;margin-top:16px"><canvas id="fin-chart-balance"></canvas></div>
       </div>
       <div class="fin-health-panel" id="fin-panel-ratio">
         <table class="fin-table">
           ${thead}
           <tbody>
-            ${row('유동비율', d.currentRatio, ratioPct)}
-            ${row('부채비율', d.debtRatio, ratioPct)}
+            ${row('유동비율', data.currentRatio, ratioPct)}
+            ${row('부채비율', data.debtRatio, ratioPct)}
           </tbody>
         </table>
+        <div style="height:220px;margin-top:16px"><canvas id="fin-chart-ratio"></canvas></div>
       </div>
     </div>
 
@@ -2108,13 +2141,14 @@ function renderFinancials(d) {
       <table class="fin-table">
         ${thead}
         <tbody>
-          ${row('영업 현금 흐름', d.operatingCashflow)}
-          ${row('순현금변동', d.netCashChange)}
+          ${row('영업 현금 흐름', data.operatingCashflow)}
+          ${row('순현금변동', data.netCashChange)}
         </tbody>
       </table>
+      <div style="height:220px;margin-top:16px"><canvas id="fin-chart-cashflow"></canvas></div>
     </div>`;
 
-  // 재무 상태 / 건전성 지표 서브탭 이벤트
+  // 서브탭 이벤트
   listEl.querySelectorAll('.fin-health-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       listEl.querySelectorAll('.fin-health-btn').forEach(b => b.classList.remove('active'));
@@ -2123,6 +2157,40 @@ function renderFinancials(d) {
       document.getElementById(`fin-panel-${btn.dataset.health}`).classList.add('active');
     });
   });
+
+  // ── 차트 렌더링 ──────────────────────────────────────────
+  const labels  = dates.map(shortDate);
+  const toB     = series => dates.map(dt => { const v = series?.[dt]; return v != null ? parseFloat((v / 1e9).toFixed(3)) : null; });
+  const rVals   = series => dates.map(dt => series?.[dt] ?? null);
+  const bFmt    = v => v == null ? '-' : `$${v.toFixed(2)}B`;
+  const pFmt    = v => v == null ? '-' : `${v.toFixed(1)}%`;
+  const condClr = (series, pos, neg) => dates.map(dt => (series?.[dt] ?? 0) >= 0 ? pos : neg);
+
+  // 이익: 매출(bar) + 영업이익(line) + 순이익(line)
+  _makeFinChart('fin-chart-income', labels, [
+    { label: '매출', type: 'bar', data: toB(data.revenue), backgroundColor: 'rgba(148,163,184,0.5)', borderRadius: 4 },
+    { label: '영업이익', type: 'line', data: toB(data.operatingIncome), borderColor: '#3b82f6', backgroundColor: 'transparent', tension: 0.3, pointRadius: 4, borderWidth: 2 },
+    { label: '순이익', type: 'line', data: toB(data.netIncome), borderColor: '#16a34a', backgroundColor: 'transparent', tension: 0.3, pointRadius: 4, borderWidth: 2 },
+  ], bFmt);
+
+  // 재무 상태: 유동자산/유동부채/비유동부채 (grouped bar)
+  _makeFinChart('fin-chart-balance', labels, [
+    { label: '유동자산',   data: toB(data.currentAssets),        backgroundColor: 'rgba(59,130,246,0.65)', borderRadius: 4 },
+    { label: '유동부채',   data: toB(data.currentLiabilities),   backgroundColor: 'rgba(251,146,60,0.65)', borderRadius: 4 },
+    { label: '비유동부채', data: toB(data.nonCurrentLiabilities), backgroundColor: 'rgba(220,38,38,0.55)',  borderRadius: 4 },
+  ], bFmt);
+
+  // 건전성 지표: 유동비율/부채비율 (line)
+  _makeFinChart('fin-chart-ratio', labels, [
+    { label: '유동비율 (%)', type: 'line', data: rVals(data.currentRatio), borderColor: '#3b82f6', backgroundColor: 'transparent', tension: 0.3, pointRadius: 4, borderWidth: 2 },
+    { label: '부채비율 (%)', type: 'line', data: rVals(data.debtRatio),   borderColor: '#ef4444', backgroundColor: 'transparent', tension: 0.3, pointRadius: 4, borderWidth: 2 },
+  ], pFmt);
+
+  // 현금흐름: 영업CF/순현금변동 (conditional color bar)
+  _makeFinChart('fin-chart-cashflow', labels, [
+    { label: '영업 현금 흐름', data: toB(data.operatingCashflow), backgroundColor: condClr(data.operatingCashflow, 'rgba(22,163,74,0.7)',  'rgba(220,38,38,0.7)'),  borderRadius: 4 },
+    { label: '순현금변동',     data: toB(data.netCashChange),     backgroundColor: condClr(data.netCashChange,     'rgba(59,130,246,0.65)', 'rgba(251,146,60,0.7)'), borderRadius: 4 },
+  ], bFmt);
 }
 
 /* ════════════════════════════════════════

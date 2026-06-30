@@ -258,8 +258,22 @@ def _save_user_field(c, user_id: int, field: str, value: str):
     except Exception:
         pass
 
-VERSION = "2.1.4"
+VERSION = "2.1.5"
 CHANGELOG = [
+    {
+        "version": "2.1.5",
+        "date": "2026-06-30",
+        "changes": [
+            "실적 탭: 오늘 날짜(UTC) 기준 미래 일정만 '다음 실적 발표' 카드에 표시 (과거 날짜 오표시 수정)",
+            "실적 탭: earningsTrend +1q fallback도 오늘 이후 날짜인 경우만 사용",
+            "재무 탭: 날짜 왼쪽→오른쪽 순서를 과거→현재로 정렬",
+            "재무 탭: 이익/재무상태/건전성지표/현금흐름 각 섹션에 Chart.js 그래프 추가",
+            "이익: 매출(막대)+영업이익(선)+순이익(선) 혼합 차트",
+            "재무상태: 유동자산/유동부채/비유동부채 그룹 막대 차트",
+            "건전성지표: 유동비율/부채비율 꺾은선 차트",
+            "현금흐름: 양수/음수 조건부 색상 막대 차트",
+        ]
+    },
     {
         "version": "2.1.4",
         "date": "2026-06-30",
@@ -1371,7 +1385,10 @@ def api_earnings():
                 ed = t.earnings_dates
                 if ed is None or ed.empty:
                     return []
-                future = ed[ed["Reported EPS"].isna()].sort_index()
+                # 오늘 이후(UTC 기준)이고 아직 발표 안 된(Reported EPS 없음) 날짜만 필터
+                now = pd.Timestamp.now(tz="UTC")
+                mask = ed["Reported EPS"].isna() & (ed.index > now)
+                future = ed[mask].sort_index()   # 오름차순 → 가장 가까운 날짜가 [0]
                 if future.empty:
                     return []
                 dt   = future.index[0]
@@ -1428,17 +1445,19 @@ def api_earnings():
                 rows[i]["revYoYPct"] = round((rows[i]["revenueActual"] - yr) / abs(yr) * 100, 2) if yr else None
 
         # 다음 실적 발표 카드에 next_quarter 예측치 병합
+        today_str = datetime.utcnow().strftime("%Y-%m-%d")
         upcoming = []
         if upcoming_raw:
             u = upcoming_raw[0].copy()
             if next_quarter:
                 u["revEstimate"]    = next_quarter.get("revEstimate")
                 u["revEstimateFmt"] = next_quarter.get("revEstimateFmt")
-                # epsEstimate는 upcoming_raw(earnings_dates)에서 우선, 없으면 earningsTrend 사용
+                # epsEstimate: upcoming_raw(earnings_dates) 우선, 없으면 earningsTrend +1q
                 if u.get("epsEstimate") is None:
                     u["epsEstimate"] = next_quarter.get("epsEstimate")
             upcoming = [u]
-        elif next_quarter.get("period"):
+        elif next_quarter.get("period") and next_quarter["period"] > today_str:
+            # earnings_dates에 미래 항목 없을 때 earningsTrend +1q 기간을 fallback 사용
             upcoming = [{
                 "date":          next_quarter["period"],
                 "epsEstimate":   next_quarter.get("epsEstimate"),
