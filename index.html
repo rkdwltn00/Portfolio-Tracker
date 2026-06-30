@@ -1706,6 +1706,28 @@ function selectTicker(ticker) {
 
   const activeTab = document.querySelector('.tab-btn.active')?.dataset?.tab || 'perf';
   Promise.all([loadPrice(ticker), loadTabData(activeTab, ticker)]);
+  // 비활성 탭 데이터 백그라운드 프리패치 (탭 클릭 시 즉시 렌더링)
+  _bgPrefetch(ticker);
+}
+
+// 백그라운드에서 모든 탭 데이터를 미리 캐시에 저장 (DOM 변경 없음)
+function _bgPrefetch(ticker) {
+  const tasks = [
+    { key: `news:${ticker}:1w`,              url: `/api/stock/news?ticker=${ticker}&period=1w` },
+    { key: `earnings:${ticker}`,             url: `/api/stock/earnings?ticker=${ticker}` },
+    { key: `financials:${ticker}:quarterly`, url: `/api/stock/financials?ticker=${ticker}&period=quarterly` },
+    { key: `fund:${ticker}`,                 url: `/api/stock/fundamentals?ticker=${ticker}` },
+  ];
+  tasks.reduce((p, { key, url }, i) =>
+    p.then(() => new Promise(res => setTimeout(() => {
+      if (activeTicker !== ticker || _cacheGet(key) || _pending.has(key)) { res(); return; }
+      fetch(url).then(r => r.json()).then(d => {
+        // earnings: 구형 배열 포맷 정규화
+        if (key.startsWith('earnings:') && Array.isArray(d)) d = { quarters: d, upcoming: [] };
+        _cacheSet(key, d);
+      }).catch(() => {}).finally(res);
+    }, 800 + i * 400)))
+  , Promise.resolve());
 }
 
 /* ════════════════════════════════════════
@@ -2166,11 +2188,11 @@ function renderFinancials(data) {
   const pFmt    = v => v == null ? '-' : `${v.toFixed(1)}%`;
   const condClr = (series, pos, neg) => dates.map(dt => (series?.[dt] ?? 0) >= 0 ? pos : neg);
 
-  // 이익: 매출(bar) + 영업이익(line) + 순이익(line)
+  // 이익: 매출/영업이익/순이익 모두 grouped bar
   _makeFinChart('fin-chart-income', labels, [
-    { label: '매출', type: 'bar', data: toB(data.revenue), backgroundColor: 'rgba(148,163,184,0.5)', borderRadius: 4 },
-    { label: '영업이익', type: 'line', data: toB(data.operatingIncome), borderColor: '#3b82f6', backgroundColor: 'transparent', tension: 0.3, pointRadius: 4, borderWidth: 2 },
-    { label: '순이익', type: 'line', data: toB(data.netIncome), borderColor: '#16a34a', backgroundColor: 'transparent', tension: 0.3, pointRadius: 4, borderWidth: 2 },
+    { label: '매출',    data: toB(data.revenue),         backgroundColor: 'rgba(148,163,184,0.65)', borderRadius: 4 },
+    { label: '영업이익', data: toB(data.operatingIncome), backgroundColor: 'rgba(59,130,246,0.75)',  borderRadius: 4 },
+    { label: '순이익',  data: toB(data.netIncome),       backgroundColor: condClr(data.netIncome, 'rgba(22,163,74,0.75)', 'rgba(220,38,38,0.75)'), borderRadius: 4 },
   ], bFmt);
 
   // 재무 상태: 유동자산/유동부채/비유동부채 (grouped bar)

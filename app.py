@@ -258,8 +258,19 @@ def _save_user_field(c, user_id: int, field: str, value: str):
     except Exception:
         pass
 
-VERSION = "2.1.5"
+VERSION = "2.1.6"
 CHANGELOG = [
+    {
+        "version": "2.1.6",
+        "date": "2026-06-30",
+        "changes": [
+            "실적 탭: EPS 데이터 없는 종목도 매출 기반으로 실적 표시 (fallback 로직 추가)",
+            "실적 탭: earnings_dates와 quarterly_financials 날짜 매칭을 인덱스→YM키 방식으로 개선 (데이터 오매칭 수정)",
+            "재무 탭 이익: 매출·영업이익·순이익 모두 그룹 막대 차트로 통일 (혼합 bar+line 제거)",
+            "기업정보 탭: 기업 개요 설명 600자 제한 제거, 전체 설명 번역 표시",
+            "탭 전환 속도 개선: 종목 선택 시 비활성 탭 데이터를 백그라운드 프리패치하여 탭 클릭 즉시 렌더링",
+        ]
+    },
     {
         "version": "2.1.5",
         "date": "2026-06-30",
@@ -1412,12 +1423,39 @@ def api_earnings():
             rev_estimate_map, next_quarter = f_rest.result()
             upcoming_raw          = f_upcoming.result()
 
+        # ── 매출 YM 인덱스 구축 ─────────────────────────────────────────────────
+        def _to_pd(col):
+            pd_col = col if isinstance(col, pd.Timestamp) else pd.Timestamp(str(col))
+            return pd_col.tz_localize(None) if pd_col.tzinfo else pd_col
+
+        rev_by_ym: dict = {}
+        for col, val in rev_list:
+            rev_by_ym[_to_pd(col).strftime("%Y-%m")] = val
+
+        # eps_rows 가 비어있으면 rev_list 로 fallback (EPS None)
+        if not eps_rows and rev_list:
+            for col, _ in rev_list[:8]:
+                col_pd = _to_pd(col)
+                eps_rows.append({
+                    "date":        col_pd,
+                    "epsActual":   None,
+                    "epsEstimate": None,
+                    "surprisePct": 0.0,
+                })
+
         # ── 결합 ──────────────────────────────────────────────────────────────
         rows = []
-        for i, ep in enumerate(eps_rows[:8]):
-            rev_val    = rev_list[i][1] if i < len(rev_list) else 0.0
+        for ep in eps_rows[:8]:
             dt         = ep["date"]
-            period_str = dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)[:10]
+            dt_pd      = _to_pd(dt) if not isinstance(dt, pd.Timestamp) else (dt.tz_localize(None) if dt.tzinfo else dt)
+            period_str = dt_pd.strftime("%Y-%m-%d")
+            # 날짜 기반 매출 매칭 (±3개월 허용)
+            rev_val = 0.0
+            for delta in [0, -1, -2, -3, 1, 2]:
+                ym_key = (dt_pd + pd.DateOffset(months=delta)).strftime("%Y-%m")
+                if ym_key in rev_by_ym:
+                    rev_val = rev_by_ym[ym_key]
+                    break
             rev_est    = rev_estimate_map.get(period_str)
             rev_surp   = None
             if rev_est and rev_val:
@@ -1513,13 +1551,13 @@ def api_fundamentals():
             return round(float(v), digits) if v is not None else None
 
         mkt = info.get("marketCap")
-        raw_desc   = (info.get("longBusinessSummary") or "")[:600]
+        raw_desc   = info.get("longBusinessSummary") or ""
         raw_sector = info.get("sector", "")
         raw_ind    = info.get("industry", "")
 
         # 기업 설명·섹터·산업 병렬 번역
         desc_ko, sector_ko, ind_ko = _translate_batch(
-            [raw_desc, raw_sector, raw_ind], 600)
+            [raw_desc, raw_sector, raw_ind], 2000)
 
         def safe_pe(key):
             """P/E는 음수·극단값(-500 이상 or 500 이하) 필터링"""
