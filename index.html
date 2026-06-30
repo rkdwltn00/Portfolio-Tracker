@@ -352,6 +352,9 @@ body { padding-bottom: env(safe-area-inset-bottom); }
 .fin-health-btn.active { background: var(--surface); color: var(--text); font-weight: 700; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
 .fin-health-panel { display: none; }
 .fin-health-panel.active { display: block; }
+.fin-growth { font-size: 10px; font-weight: 600; margin-top: 2px; letter-spacing: .2px; }
+.fin-growth.pos { color: #16a34a; }
+.fin-growth.neg { color: #ef4444; }
 .eq-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 22px; box-shadow: var(--shadow); }
 .eq-status-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .eq-status-title { font-size: 17px; font-weight: 700; }
@@ -2067,85 +2070,7 @@ function _destroyFinCharts() {
   _finCharts = [];
 }
 
-// 성장률 점·선·레이블 플러그인
-const _growthPlugin = {
-  id: 'growthAnnotation',
-  afterDatasetsDraw(chart) {
-    const { ctx } = chart;
-    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-    const bgClr  = isDark ? 'rgba(15,23,42,0.88)' : 'rgba(255,255,255,0.92)';
-    const dotColors = ['#94a3b8', '#3b82f6', '#6b7280'];
-
-    ctx.save();
-    chart.data.datasets.forEach((ds, di) => {
-      const meta = chart.getDatasetMeta(di);
-      if (meta.hidden || meta.type !== 'bar') return;
-      const bars = meta.data;
-      if (!bars.length) return;
-
-      const lineClr = dotColors[di] || '#888';
-
-      for (let i = 0; i < bars.length; i++) {
-        const bar = bars[i];
-        const cx = bar.x;
-        const cy = (bar.y + bar.base) / 2;
-
-        // 점
-        ctx.beginPath();
-        ctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = lineClr;
-        ctx.fill();
-        ctx.strokeStyle = isDark ? '#1e293b' : '#fff';
-        ctx.lineWidth = 1.2;
-        ctx.stroke();
-
-        if (i === 0) continue;
-
-        const prevBar = bars[i - 1];
-        const pcx = prevBar.x;
-        const pcy = (prevBar.y + prevBar.base) / 2;
-        const valA = ds.data[i - 1];
-        const valB = ds.data[i];
-
-        // 연결선 (점선)
-        ctx.beginPath();
-        ctx.moveTo(pcx, pcy);
-        ctx.lineTo(cx, cy);
-        ctx.strokeStyle = lineClr;
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([4, 3]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // 성장률 레이블
-        if (valA != null && valB != null && Math.abs(valA) > 1e-12) {
-          const pct = (valB - valA) / Math.abs(valA) * 100;
-          const label = (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
-          const midX  = (pcx + cx) / 2;
-          const midY  = Math.min(pcy, cy) - 14;
-
-          ctx.font = 'bold 9px -apple-system,BlinkMacSystemFont,sans-serif';
-          const tw = ctx.measureText(label).width;
-          const bx = midX - tw / 2 - 3;
-          const by = midY - 7;
-
-          // 배경 박스
-          ctx.fillStyle = bgClr;
-          ctx.fillRect(bx, by, tw + 6, 12);
-
-          // 텍스트
-          ctx.fillStyle = pct >= 0 ? '#16a34a' : '#ef4444';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(label, midX, by + 6);
-        }
-      }
-    });
-    ctx.restore();
-  }
-};
-
-function _makeFinChart(canvasId, labels, datasets, ytickFmt, showGrowth = false) {
+function _makeFinChart(canvasId, labels, datasets, ytickFmt) {
   const el = document.getElementById(canvasId);
   if (!el) return;
   const c = chartColors();
@@ -2162,8 +2087,7 @@ function _makeFinChart(canvasId, labels, datasets, ytickFmt, showGrowth = false)
         x: { ticks: { color: c.text, font: { size: 11 } }, grid: { color: c.grid } },
         y: { ticks: { color: c.text, font: { size: 10 }, callback: ytickFmt }, grid: { color: c.grid } }
       }
-    },
-    plugins: showGrowth ? [_growthPlugin] : []
+    }
   });
   _finCharts.push(chart);
 }
@@ -2182,14 +2106,24 @@ function renderFinancials(data) {
 
   const thead = `<thead><tr><th>항목</th>${dates.map(dt => `<th>${shortDate(dt)}</th>`).join('')}</tr></thead>`;
 
-  const row = (label, series, fmt = _fmtFinVal) =>
-    `<tr><td>${label}</td>${dates.map(dt => {
-      const v = series?.[dt];
-      const cls = v != null && v < 0 ? ' class="neg"' : '';
-      return `<td${cls}>${fmt(v)}</td>`;
-    }).join('')}</tr>`;
-
   const ratioPct = v => v == null ? '-' : `${v.toFixed(1)}%`;
+
+  // 값 + 전기 대비 성장률(%) 한 셀에 표시
+  const rowWithGrowth = (label, series, fmt = _fmtFinVal) => {
+    const vals = dates.map(dt => series?.[dt] ?? null);
+    const cells = vals.map((v, i) => {
+      const valCls = v != null && v < 0 ? ' class="neg"' : '';
+      let growHtml = '';
+      if (i > 0 && v != null && vals[i-1] != null && Math.abs(vals[i-1]) > 1e-12) {
+        const pct = (v - vals[i-1]) / Math.abs(vals[i-1]) * 100;
+        const sign = pct >= 0 ? '+' : '';
+        const cls  = pct >= 0 ? 'pos' : 'neg';
+        growHtml = `<div class="fin-growth ${cls}">${sign}${pct.toFixed(1)}%</div>`;
+      }
+      return `<td${valCls}>${fmt(v)}${growHtml}</td>`;
+    }).join('');
+    return `<tr><td>${label}</td>${cells}</tr>`;
+  };
 
   listEl.innerHTML = `
     <!-- 이익 -->
@@ -2198,12 +2132,12 @@ function renderFinancials(data) {
       <table class="fin-table">
         ${thead}
         <tbody>
-          ${row('매출', data.revenue)}
-          ${row('영업이익', data.operatingIncome)}
-          ${row('순이익', data.netIncome)}
+          ${rowWithGrowth('매출', data.revenue)}
+          ${rowWithGrowth('영업이익', data.operatingIncome)}
+          ${rowWithGrowth('순이익', data.netIncome)}
         </tbody>
       </table>
-      <div style="height:260px;margin-top:16px"><canvas id="fin-chart-income"></canvas></div>
+      <div style="height:220px;margin-top:16px"><canvas id="fin-chart-income"></canvas></div>
     </div>
 
     <!-- 재무 -->
@@ -2217,9 +2151,9 @@ function renderFinancials(data) {
         <table class="fin-table">
           ${thead}
           <tbody>
-            ${row('유동자산', data.currentAssets)}
-            ${row('유동부채', data.currentLiabilities)}
-            ${row('비유동부채', data.nonCurrentLiabilities)}
+            ${rowWithGrowth('유동자산', data.currentAssets)}
+            ${rowWithGrowth('유동부채', data.currentLiabilities)}
+            ${rowWithGrowth('비유동부채', data.nonCurrentLiabilities)}
           </tbody>
         </table>
         <div style="height:220px;margin-top:16px"><canvas id="fin-chart-balance"></canvas></div>
@@ -2228,8 +2162,8 @@ function renderFinancials(data) {
         <table class="fin-table">
           ${thead}
           <tbody>
-            ${row('유동비율', data.currentRatio, ratioPct)}
-            ${row('부채비율', data.debtRatio, ratioPct)}
+            ${rowWithGrowth('유동비율', data.currentRatio, ratioPct)}
+            ${rowWithGrowth('부채비율', data.debtRatio, ratioPct)}
           </tbody>
         </table>
         <div style="height:220px;margin-top:16px"><canvas id="fin-chart-ratio"></canvas></div>
@@ -2242,8 +2176,8 @@ function renderFinancials(data) {
       <table class="fin-table">
         ${thead}
         <tbody>
-          ${row('영업 현금 흐름', data.operatingCashflow)}
-          ${row('순현금변동', data.netCashChange)}
+          ${rowWithGrowth('영업 현금 흐름', data.operatingCashflow)}
+          ${rowWithGrowth('순현금변동', data.netCashChange)}
         </tbody>
       </table>
       <div style="height:220px;margin-top:16px"><canvas id="fin-chart-cashflow"></canvas></div>
@@ -2272,7 +2206,7 @@ function renderFinancials(data) {
     { label: '매출',    data: toB(data.revenue),         backgroundColor: 'rgba(148,163,184,0.65)', borderRadius: 4 },
     { label: '영업이익', data: toB(data.operatingIncome), backgroundColor: 'rgba(59,130,246,0.75)',  borderRadius: 4 },
     { label: '순이익',  data: toB(data.netIncome),       backgroundColor: condClr(data.netIncome, 'rgba(22,163,74,0.75)', 'rgba(220,38,38,0.75)'), borderRadius: 4 },
-  ], bFmt, true);
+  ], bFmt);
 
   // 재무 상태: 유동자산/유동부채/비유동부채 (grouped bar)
   _makeFinChart('fin-chart-balance', labels, [

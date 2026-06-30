@@ -258,8 +258,16 @@ def _save_user_field(c, user_id: int, field: str, value: str):
     except Exception:
         pass
 
-VERSION = "2.1.7"
+VERSION = "2.1.8"
 CHANGELOG = [
+    {
+        "version": "2.1.8",
+        "date": "2026-06-30",
+        "changes": [
+            "재무 탭 이익/재무상태/건전성/현금흐름 테이블: 전기 대비 성장률(%) 각 값 하단에 표시 (양수=초록, 음수=빨강)",
+            "재무 탭 이익 차트: 차트 위 점·선 오버레이 제거, 깔끔한 grouped bar로 원복",
+        ]
+    },
     {
         "version": "2.1.7",
         "date": "2026-06-30",
